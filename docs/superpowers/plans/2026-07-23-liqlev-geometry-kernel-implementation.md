@@ -96,7 +96,7 @@ Run from the repository root:
 $source = 'C:\Users\sasorian\Documents\Cryo Vent LLR\LIQLEV_current_build_team_share_2026-05-13\github_repo_source'
 $names = @(
   'core.py', 'thermo_utils.py', 'gui.py', 'liqlev', 'tests', 'validation',
-  'scripts', 'packaging', 'data', 'AGENTS.md', '.gitignore', 'LICENSE',
+  'scripts', 'packaging', 'data', 'AGENTS.md', 'LICENSE',
   'README.md', 'requirements.txt', 'requirements-modernization.txt',
   'LIQLEV.spec', 'LIQLEV-Modern.spec', 'MODERNIZATION_GOAL.md'
 )
@@ -107,6 +107,9 @@ foreach ($name in $names) {
 
 Expected: the imported files appear in `git status`; `.git`, caches, build
 outputs, and environments are absent.
+
+Merge the source `.gitignore` rules into the existing repository file without
+removing its required `.worktrees/` entry.
 
 - [ ] **Step 2: Record the immutable import manifest**
 
@@ -1013,7 +1016,12 @@ from liqlev.geometry.fixtures import cylinder_kernel
 from validation.physics_cases import build_case_inputs, get_case
 
 
-def attach_geometry(inputs: dict[str, object], diameter: float, height: float) -> None:
+def attach_geometry(
+    inputs: dict[str, object],
+    diameter: float,
+    height: float,
+    fill_fraction: float,
+) -> None:
     kernel = cylinder_kernel(diameter, height, node_count=1025)
     inputs.update(
         {
@@ -1025,6 +1033,7 @@ def attach_geometry(inputs: dict[str, object], diameter: float, height: float) -
             "GeomPerimeter": kernel.perimeter_ft,
             "GeomSidewallArea": kernel.sidewall_area_ft2,
             "GeomSidewallCoefficients": kernel.sidewall_coefficients,
+            "FillFraction": fill_fraction,
         }
     )
 
@@ -1033,7 +1042,13 @@ def test_custom_cylinder_matches_legacy_solver() -> None:
     case = get_case("hydrogen_height_dep_mid_fill")
     legacy_inputs = build_case_inputs(case)
     custom_inputs = build_case_inputs(case)
-    attach_geometry(custom_inputs, case.dtank_ft, case.htank_ft)
+    attach_geometry(
+        custom_inputs,
+        case.dtank_ft,
+        case.htank_ft,
+        case.fill_fraction,
+    )
+    custom_inputs["Dtank"] = 0.75 * case.dtank_ft
     legacy = liqlev_simulation(legacy_inputs, verbose=False)
     custom = liqlev_simulation(custom_inputs, verbose=False)
     columns = ["Height", "eps", "VBL vol", "BL thick", "BL Vap Out"]
@@ -1055,8 +1070,8 @@ Run:
 python -m pytest tests/geometry/test_core_custom_geometry.py -q
 ```
 
-Expected: the equivalence assertion fails because `core.py` still executes the
-legacy branch.
+Expected: the equivalence assertion fails because `core.py` still uses the
+deliberately inconsistent `Dtank` instead of the attached geometry arrays.
 
 - [ ] **Step 3: Add geometry arguments to `_solver_loop`**
 
@@ -1333,10 +1348,9 @@ import pytest
 from liqlev.cad.xcaf import load_named_product, sha256_file
 
 
-SOURCE = (
-    Path(__file__).resolve().parents[3]
-    / "geometry"
-    / "nhq01-m21a- 0201_TankAssy_NASA.STEP"
+SOURCE = Path(
+    r"C:\Users\sasorian\Documents\Eta_Space\geometry"
+    r"\nhq01-m21a- 0201_TankAssy_NASA.STEP"
 )
 EXPECTED_HASH = "0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5"
 
