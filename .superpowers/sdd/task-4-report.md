@@ -79,6 +79,33 @@ run completed:
 26 passed in 6.63s
 ```
 
+### Reviewer regression RED/GREEN
+
+A reviewer found that Numba evaluates `max(0.0, np.nan)` as `0.0`. The
+integrator previously clamped each raw RK4 candidate before checking the
+completed state for finiteness, so nonfinite derivatives could be converted
+to zero and returned with success status.
+
+The regression injects `NaN` into the cumulative-volume derivative
+coefficients and requires status `1` plus non-success (`NaN`) outputs. Before
+the fix:
+
+```text
+python -m pytest \
+  tests/geometry/test_boundary_layer.py::test_boundary_layer_rejects_nonfinite_rk4_candidate \
+  -q
+1 failed in 0.87s
+E assert 0 == 1
+```
+
+The minimal correction computes raw `next_q` and `next_vbl`, checks both for
+finiteness, and only then clamps finite completed states to zero. The
+derivatives and RK4 formula are unchanged. After the fix:
+
+```text
+1 passed in 1.34s
+```
+
 ## Governing equations
 
 For a cylinder of diameter `D`, Eq. 4-33 is:
@@ -220,9 +247,10 @@ nopython signature is:
 ```
 
 The integrator advances interval by interval with fixed RK4 substeps. Stage
-derivatives are not clamped; only completed `q` and `VBL` states are clamped
-to zero. Invalid/nonfinite height, nonpositive/nonfinite `K3`, invalid
-substeps, or a nonfinite state returns status `1`.
+derivatives are not clamped. Raw completed `q` and `VBL` candidates are
+validated for finiteness before finite completed states are clamped to zero.
+Invalid/nonfinite height, nonpositive/nonfinite `K3`, invalid substeps, or a
+nonfinite state returns status `1`.
 
 ## Analytic fixtures
 
@@ -255,7 +283,7 @@ Focused:
 ```text
 python -m pytest tests/geometry/test_boundary_layer.py \
   tests/geometry/test_jit_interpolation.py -q
-26 passed in 6.63s
+27 passed
 ```
 
 Legacy baseline:
@@ -269,7 +297,7 @@ Full:
 
 ```text
 python -m pytest -q
-40 passed in 8.51s
+41 passed
 ```
 
 Whitespace:
@@ -280,6 +308,10 @@ exit 0
 ```
 
 ## Files changed
+
+The reviewer fix changes `liqlev/geometry/jit.py`,
+`tests/geometry/test_boundary_layer.py`, and this report. The complete Task 4
+file set is:
 
 - `liqlev/geometry/fixtures.py`
 - `liqlev/geometry/jit.py`
@@ -295,7 +327,8 @@ exit 0
 - Confirmed Eq. 4-33, 4-37, and 4-38 indexing and powers.
 - Confirmed every requested fill is below the `0.1%` report-cylinder limit.
 - Confirmed negative RK4 stage derivatives are not clamped.
-- Confirmed only completed `q` and `VBL` states are clamped.
+- Confirmed raw RK4 candidates are rejected if nonfinite before clamping.
+- Confirmed only finite completed `q` and `VBL` states are clamped.
 - Confirmed invalid inputs and nonfinite states return status `1`.
 - Confirmed normalized exit flow returns `q_top`.
 - Confirmed analytic fixture arrays, axis, gravity, and unit metadata.
@@ -307,13 +340,20 @@ exit 0
 
 ## Commit
 
-The report cannot contain the hash of the commit that contains itself. The
-controller will append the final commit hash immediately after the commit.
-
-Planned subject:
+Original Task 4 commit:
 
 ```text
-feat: generalize boundary layer by local perimeter
+a2107769969eff1c8dd229d8857dd358b8ad0151
+```
+
+The report cannot contain the hash of a follow-up commit that contains the
+updated report itself. The controller will record the reviewer-fix commit hash
+in the handoff immediately after the commit.
+
+Reviewer-fix subject:
+
+```text
+fix: reject nonfinite boundary layer states
 ```
 
 Configured author:

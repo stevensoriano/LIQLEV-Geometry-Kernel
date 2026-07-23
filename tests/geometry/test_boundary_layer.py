@@ -169,6 +169,24 @@ def test_boundary_layer_rejects_invalid_substeps(substeps: int) -> None:
     assert np.isnan(result[:3]).all()
 
 
+def test_boundary_layer_rejects_nonfinite_rk4_candidate() -> None:
+    kernel = cylinder_kernel(4.0, 8.0, node_count=17)
+    volume_coefficients = kernel.volume_coefficients.copy()
+    volume_coefficients[2, :] = np.nan
+
+    result = integrate_boundary_layer(
+        0.015,
+        4.0,
+        kernel.height_ft,
+        volume_coefficients,
+        kernel.perimeter_ft,
+        4,
+    )
+
+    assert result[3] == 1
+    assert np.isnan(result[:3]).all()
+
+
 def test_boundary_layer_integrator_compiles_in_nopython_mode() -> None:
     kernel = cylinder_kernel(4.0, 8.0, node_count=17)
     result = integrate_boundary_layer(

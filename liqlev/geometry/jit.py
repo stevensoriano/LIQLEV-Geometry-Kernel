@@ -219,19 +219,20 @@ def integrate_boundary_layer(
                 perimeter_values,
                 ak3,
             )
-            q = max(
-                0.0,
-                q + step * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q) / 6.0,
+            next_q = (
+                q
+                + step * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q) / 6.0
             )
-            vbl = max(
-                0.0,
+            next_vbl = (
                 vbl
                 + step
                 * (k1_vbl + 2.0 * k2_vbl + 2.0 * k3_vbl + k4_vbl)
-                / 6.0,
+                / 6.0
             )
-            if not np.isfinite(q) or not np.isfinite(vbl):
+            if not np.isfinite(next_q) or not np.isfinite(next_vbl):
                 return np.nan, np.nan, np.nan, 1
+            q = max(0.0, next_q)
+            vbl = max(0.0, next_vbl)
             h += step
 
     perimeter_top = interp_linear_nonnegative(
