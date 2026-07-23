@@ -107,13 +107,51 @@ The maximum observed error was `9.920125e-07`, below the required
 `rtol=1e-3`. These comparisons do not require or imply equality with the
 preserved legacy transcription.
 
+## Independent-review correction
+
+Independent review found that the wrapper still unconditionally calculated
+legacy `perim`, `ac`, `htank`, and diameter-series coefficients before calling
+the branched JIT loop. Consequently, otherwise-valid custom geometry with
+`Dtank=0.0` failed before entering custom mode.
+
+A regression was added first and run against committed head
+`6fdb920b651ab248750aaad28222cc22fed30697`:
+
+```text
+python -m pytest \
+  tests/geometry/test_core_custom_geometry.py::test_custom_cylinder_does_not_require_a_nonzero_legacy_dtank \
+  -q
+1 failed
+ZeroDivisionError: float division by zero
+core.py: htank = volt / ac
+```
+
+The minimal correction moved the existing legacy scalar and coefficient
+formulas under `geometry_mode == 0`. Custom mode supplies finite neutral
+scalars plus contiguous ten-element `float64` dummy arrays, preserving the
+single Numba signature without evaluating any diameter-based formula.
+
+The unchanged regression then passed:
+
+```text
+1 passed in 8.93s
+```
+
+The zero-diameter custom outputs match the positive-placeholder custom outputs
+for `Height`, `dh/dt`, `eps`, `VBL vol`, `BL thick`, and `BL Vap Out` within
+`rtol=1e-12`, `atol=1e-14`. A separate SI custom probe with `Dtank=0.0` also
+completed successfully and matched the equivalent British custom outputs at
+the same tolerances. The diameter input key remains present only until the
+planned Task 6 configuration work; its value no longer controls or crashes
+custom mode.
+
 ## Verification
 
 Task 5 focused:
 
 ```text
 python -m pytest tests/geometry/test_core_custom_geometry.py -q
-12 passed
+13 passed
 ```
 
 Task 3 and Task 4 focused regressions:
@@ -139,7 +177,7 @@ Full suite:
 
 ```text
 python -m pytest -q
-53 passed
+54 passed
 ```
 
 Whitespace:
@@ -160,12 +198,13 @@ file changed is `core.py`, where all custom behavior is visibly guarded by
 
 ## Numba evidence
 
-A fresh process ran one legacy case and one custom case, then inspected
-`_solver_loop`:
+A fresh process ran one legacy case and a custom `Dtank=0.0` case, then
+inspected `_solver_loop`:
 
 ```text
 nopython_signature_count=1
 compiled_signature_count=1
+contains_pyobject=False
 ```
 
 The signature contains only primitive scalars, contiguous `float64` one- and
@@ -184,6 +223,9 @@ two-dimensional arrays, and returns
 - Confirmed legacy and custom wrapper calls share one nopython signature.
 - Confirmed deliberately inconsistent legacy diameters do not change custom
   height, kinematics, epsilon, or boundary-layer outputs.
+- Confirmed custom mode does not evaluate legacy diameter-derived scalars or
+  series coefficients and runs with `Dtank=0.0` in British and SI inputs.
+- Confirmed the legacy formulas are unchanged inside `geometry_mode == 0`.
 - Confirmed explicit fill uses volume inversion rather than legacy
   `Htzero * Ac / Volt`.
 - Confirmed interface area is the cumulative-volume derivative and sidewall
@@ -205,6 +247,13 @@ Implementation commit:
 ```text
 878b44fe211af4d5dfa68227cf0140b5b14966e2
 feat: add custom geometry branch to JIT solver
+```
+
+Independent-review correction:
+
+```text
+f5a142d62b17e620b1f747670070b19af0bef796
+fix: decouple custom geometry from legacy diameter
 ```
 
 Configured author:
