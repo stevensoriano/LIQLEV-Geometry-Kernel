@@ -1,0 +1,9 @@
+{
+  "source_directory": "C:\\Users\\sasorian\\Documents\\Cryo Vent LLR\\LIQLEV_current_build_team_share_2026-05-13\\github_repo_source",
+  "import_date": "2026-07-23",
+  "files": {
+    "core.py": "B715978F408C7B4D66D499486F3A1FCD0F9177B12A54B981F9785A15D3124F29",
+    "thermo_utils.py": "5D5817D58DBBC50F8E332A9CE34D9B84EEAAF8CEDC5F45FD5E37C82C6546C2EA",
+    "validation/baselines/physics_baseline.json": "CD45206BECF128A28C55C7B00DAF494AC9FC8BD43FF356F724F95E2CF1A7E747"
+  }
+}

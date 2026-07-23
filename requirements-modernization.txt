@@ -1,0 +1,10 @@
+# Modernization and validation dependencies.
+# Keep separate from requirements.txt until the new app becomes the default.
+
+pytest
+ruff
+pydantic
+PySide6
+pyqtgraph
+pyinstaller
+

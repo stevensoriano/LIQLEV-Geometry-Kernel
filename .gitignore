@@ -1,2 +1,33 @@
 .worktrees/
 .superpowers/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+
+# Results and Data
+results/
+*.xlsx
+*.csv
+!data/5s_drop_tower_extracted_az_positive_data.csv # Keep the input data, but ignore output data
+
+# Virtual Environments
+venv/
+env/
+.env
+.venv/
+
+# Validation baselines generated per environment
+validation/baselines/*.json
+!validation/baselines/README.md
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Claude Code
+.claude/

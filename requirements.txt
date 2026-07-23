@@ -1,0 +1,8 @@
+numpy
+pandas
+matplotlib
+CoolProp
+customtkinter
+numba
+llvmlite
+Pillow
