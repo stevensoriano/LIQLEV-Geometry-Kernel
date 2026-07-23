@@ -1,0 +1,4 @@
+-r requirements.txt
+cadquery>=2.7,<2.8
+scipy>=1.16,<1.17
+pytest>=8.4,<9

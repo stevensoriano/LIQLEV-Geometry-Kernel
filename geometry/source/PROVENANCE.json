@@ -1,0 +1,9 @@
+{
+  "source_path": "C:\\Users\\sasorian\\Documents\\Eta_Space\\geometry\\nhq01-m21a- 0201_TankAssy_NASA.STEP",
+  "source_sha256": "0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5",
+  "source_size_bytes": 36844537,
+  "tank_product": "nhq01-m21a- 0202_short",
+  "height_axis": "+Y",
+  "gravity_direction": "-Y",
+  "closure_planes_mm": [-275.406791, 275.296791]
+}
