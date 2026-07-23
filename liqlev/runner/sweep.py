@@ -10,10 +10,10 @@ from liqlev.model.config import SimulationConfig
 from liqlev.model.validation import validate_simulation_config
 from liqlev.runner.progress import ProgressCallback, ProgressEvent, emit_progress
 from liqlev.runner.single import (
+    _run_single_case_prevalidated,
     build_property_table_for_config,
     load_vent_profile,
     prepare_gravity,
-    run_single_case,
 )
 
 
@@ -67,7 +67,7 @@ def run_sweep(
 
             for rate in rates:
                 run_index += 1
-                result = run_single_case(
+                result = _run_single_case_prevalidated(
                     config,
                     fill_fraction=fill_fraction,
                     vent_rate_lbm_s=rate,

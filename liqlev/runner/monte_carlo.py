@@ -59,7 +59,7 @@ def run_monte_carlo(
     progress_cb: ProgressCallback | None = None,
 ) -> MonteCarloResult:
     """Run legacy-compatible Monte Carlo sampling without GUI objects."""
-    validate_simulation_config(config)
+    geometry = validate_simulation_config(config)
     validate_monte_carlo_request(request)
 
     prop_table = build_property_table_for_config(config)
@@ -106,6 +106,7 @@ def run_monte_carlo(
             nggo=2,
             tggo=tggo,
             xggo=xggo,
+            geometry=geometry,
         )
 
         dataframe = liqlev_simulation(inputs, verbose=False, prop_table=prop_table)

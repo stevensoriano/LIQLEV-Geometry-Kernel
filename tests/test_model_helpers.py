@@ -159,3 +159,64 @@ def test_corrupt_geometry_archive_is_attributed_to_geometry_path(tmp_path) -> No
     assert "tank.geometry_path" in {
         issue.field for issue in exc_info.value.issues
     }
+
+
+def test_non_string_geometry_path_is_attributed_to_geometry_path() -> None:
+    config = SimulationConfig(tank=TankConfig(geometry_path=123))
+
+    with pytest.raises(InputValidationError) as exc_info:
+        validate_simulation_config(config)
+
+    assert "tank.geometry_path" in {
+        issue.field for issue in exc_info.value.issues
+    }
+
+
+@pytest.mark.parametrize(
+    "metadata_case",
+    [
+        "invalid_json",
+        "list_root",
+        "scalar_root",
+        "missing_hash",
+        "null_hash",
+        "numeric_hash",
+        "missing_metadata_field",
+    ],
+)
+def test_malformed_geometry_metadata_is_attributed_to_geometry_path(
+    tmp_path,
+    metadata_case: str,
+) -> None:
+    package_path = tmp_path / "tank.npz"
+    save_geometry_package(cylinder_kernel(4.0, 8.0, node_count=17), package_path)
+    metadata_path = package_path.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    if metadata_case == "invalid_json":
+        metadata_path.write_text("{", encoding="utf-8")
+    elif metadata_case == "list_root":
+        metadata_path.write_text(json.dumps([]), encoding="utf-8")
+    elif metadata_case == "scalar_root":
+        metadata_path.write_text(json.dumps(7), encoding="utf-8")
+    elif metadata_case == "missing_hash":
+        metadata.pop("npz_sha256")
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    elif metadata_case == "null_hash":
+        metadata["npz_sha256"] = None
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    elif metadata_case == "numeric_hash":
+        metadata["npz_sha256"] = 7
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    elif metadata_case == "missing_metadata_field":
+        metadata.pop("axis")
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    config = SimulationConfig(tank=TankConfig(geometry_path=str(package_path)))
+
+    with pytest.raises(InputValidationError) as exc_info:
+        validate_simulation_config(config)
+
+    assert "tank.geometry_path" in {
+        issue.field for issue in exc_info.value.issues
+    }

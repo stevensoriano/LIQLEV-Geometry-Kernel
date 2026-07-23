@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+from zipfile import BadZipFile
 
 import numpy as np
 
@@ -116,18 +117,60 @@ def save_geometry_package(kernel: GeometryKernel, path: str | Path) -> None:
 
 
 def load_geometry_package(path: str | Path) -> GeometryKernel:
-    target = Path(path)
+    try:
+        target = Path(path)
+    except (TypeError, ValueError) as exc:
+        raise GeometryPackageError(
+            "geometry package path must be a string or path-like value"
+        ) from exc
+
     metadata_path = target.with_suffix(".json")
-    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    expected_hash = payload.pop("npz_sha256").upper()
-    if _sha256(target) != expected_hash:
+    try:
+        metadata_text = metadata_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise GeometryPackageError(
+            f"could not read geometry metadata JSON: {metadata_path}"
+        ) from exc
+    try:
+        payload = json.loads(metadata_text)
+    except json.JSONDecodeError as exc:
+        raise GeometryPackageError("geometry metadata JSON is invalid") from exc
+    if not isinstance(payload, dict):
+        raise GeometryPackageError("geometry metadata JSON root must be an object")
+    if "npz_sha256" not in payload:
+        raise GeometryPackageError("geometry metadata is missing npz_sha256")
+    expected_hash_value = payload.pop("npz_sha256")
+    if not isinstance(expected_hash_value, str):
+        raise GeometryPackageError("geometry metadata npz_sha256 must be a string")
+    expected_hash = expected_hash_value.upper()
+    try:
+        actual_hash = _sha256(target)
+    except OSError as exc:
+        raise GeometryPackageError(f"could not read geometry NPZ: {target}") from exc
+    if actual_hash != expected_hash:
         raise GeometryPackageError("NPZ SHA-256 does not match metadata")
-    metadata = GeometryMetadata(**payload)
-    with np.load(target, allow_pickle=False) as archive:
-        arrays = {
-            name: np.ascontiguousarray(archive[name], dtype=np.float64)
-            for name in GeometryKernel.array_names()
-        }
+    try:
+        metadata = GeometryMetadata(**payload)
+    except (TypeError, ValueError) as exc:
+        raise GeometryPackageError(
+            f"geometry metadata fields are invalid: {exc}"
+        ) from exc
+    try:
+        with np.load(target, allow_pickle=False) as archive:
+            arrays = {
+                name: np.ascontiguousarray(archive[name], dtype=np.float64)
+                for name in GeometryKernel.array_names()
+            }
+    except (
+        OSError,
+        EOFError,
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        BadZipFile,
+    ) as exc:
+        raise GeometryPackageError(f"invalid geometry NPZ archive: {exc}") from exc
     kernel = GeometryKernel(metadata=metadata, **arrays)
     validate_geometry_kernel(kernel)
     return kernel

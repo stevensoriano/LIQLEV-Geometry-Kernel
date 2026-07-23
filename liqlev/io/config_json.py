@@ -30,8 +30,8 @@ def simulation_config_to_dict(config: SimulationConfig) -> dict[str, Any]:
 
 def simulation_config_from_dict(payload: dict[str, Any]) -> SimulationConfig:
     """Build a typed config from a versioned dictionary."""
-    version = int(payload.get("schema_version", 1))
-    if version not in (1, CONFIG_SCHEMA_VERSION):
+    version = payload.get("schema_version", 1)
+    if type(version) is not int or version not in (1, CONFIG_SCHEMA_VERSION):
         raise ValueError(f"Unsupported config schema_version: {version}")
 
     fluid_data = dict(payload.get("fluid", {}))

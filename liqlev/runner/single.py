@@ -122,10 +122,39 @@ def run_single_case(
     progress_cb: ProgressCallback | None = None,
     run_index: int | None = None,
     total_runs: int | None = None,
-    geometry: GeometryKernel | None = None,
 ) -> SingleCaseResult:
     """Run one LIQLEV case without constructing any GUI objects."""
-    geometry = validate_simulation_config(config, geometry=geometry)
+    geometry = validate_simulation_config(config)
+    return _run_single_case_prevalidated(
+        config,
+        geometry=geometry,
+        fill_fraction=fill_fraction,
+        vent_rate_lbm_s=vent_rate_lbm_s,
+        epsilon_spec=epsilon_spec,
+        prepared_gravity=prepared_gravity,
+        vent_profile=vent_profile,
+        prop_table=prop_table,
+        progress_cb=progress_cb,
+        run_index=run_index,
+        total_runs=total_runs,
+    )
+
+
+def _run_single_case_prevalidated(
+    config: SimulationConfig,
+    *,
+    geometry: GeometryKernel | None,
+    fill_fraction: float | None = None,
+    vent_rate_lbm_s: float | None = None,
+    epsilon_spec: str | float | None = None,
+    prepared_gravity: PreparedGravity | None = None,
+    vent_profile: ProfileData | None = None,
+    prop_table=None,
+    progress_cb: ProgressCallback | None = None,
+    run_index: int | None = None,
+    total_runs: int | None = None,
+) -> SingleCaseResult:
+    """Run one case with a geometry kernel already validated from its config."""
 
     fill = config.tank.fill_fractions[0] if fill_fraction is None else fill_fraction
     vent_rate = (

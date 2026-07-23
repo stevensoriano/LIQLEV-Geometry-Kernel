@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import numpy as np
@@ -84,3 +85,80 @@ def test_load_rejects_changed_binary_hash(tmp_path) -> None:
         file_obj.write(b"changed")
     with pytest.raises(GeometryPackageError, match="SHA-256"):
         load_geometry_package(target)
+
+
+@pytest.mark.parametrize("metadata_root", [[], 7])
+def test_load_rejects_nonobject_metadata_root(tmp_path, metadata_root) -> None:
+    target = tmp_path / "geometry.npz"
+    save_geometry_package(valid_kernel(), target)
+    target.with_suffix(".json").write_text(
+        json.dumps(metadata_root),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GeometryPackageError, match="root"):
+        load_geometry_package(target)
+
+
+def test_load_rejects_invalid_metadata_json(tmp_path) -> None:
+    target = tmp_path / "geometry.npz"
+    save_geometry_package(valid_kernel(), target)
+    target.with_suffix(".json").write_text("{", encoding="utf-8")
+
+    with pytest.raises(GeometryPackageError, match="JSON"):
+        load_geometry_package(target)
+
+
+def test_load_rejects_missing_metadata_hash(tmp_path) -> None:
+    target = tmp_path / "geometry.npz"
+    save_geometry_package(valid_kernel(), target)
+    metadata_path = target.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("npz_sha256")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GeometryPackageError, match="npz_sha256"):
+        load_geometry_package(target)
+
+
+@pytest.mark.parametrize("bad_hash", [None, 7])
+def test_load_rejects_nonstring_metadata_hash(tmp_path, bad_hash) -> None:
+    target = tmp_path / "geometry.npz"
+    save_geometry_package(valid_kernel(), target)
+    metadata_path = target.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["npz_sha256"] = bad_hash
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GeometryPackageError, match="npz_sha256"):
+        load_geometry_package(target)
+
+
+def test_load_rejects_malformed_metadata_fields(tmp_path) -> None:
+    target = tmp_path / "geometry.npz"
+    save_geometry_package(valid_kernel(), target)
+    metadata_path = target.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("axis")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GeometryPackageError, match="metadata fields"):
+        load_geometry_package(target)
+
+
+def test_load_rejects_corrupt_npz_with_matching_hash(tmp_path) -> None:
+    target = tmp_path / "geometry.npz"
+    save_geometry_package(valid_kernel(), target)
+    target.write_bytes(b"not a valid numpy archive")
+    metadata_path = target.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["npz_sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(GeometryPackageError, match="NPZ archive"):
+        load_geometry_package(target)
+
+
+def test_load_rejects_non_path_value() -> None:
+    with pytest.raises(GeometryPackageError, match="path"):
+        load_geometry_package(123)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import numpy as np
@@ -9,8 +10,13 @@ import pandas as pd
 import pytest
 
 from liqlev.geometry.fixtures import cylinder_kernel
-from liqlev.geometry.package import save_geometry_package
-from liqlev.io.config_json import load_simulation_config, save_simulation_config
+import liqlev.model.validation as validation_module
+from liqlev.geometry.package import load_geometry_package, save_geometry_package
+from liqlev.io.config_json import (
+    load_simulation_config,
+    save_simulation_config,
+    simulation_config_from_dict,
+)
 from liqlev.model.config import (
     EpsilonConfig,
     FluidConfig,
@@ -55,7 +61,11 @@ def config_from_case(name: str) -> SimulationConfig:
     )
 
 
-def custom_geometry_config(geometry_path: str) -> SimulationConfig:
+def custom_geometry_config(
+    geometry_path: str,
+    *,
+    fill_fractions: tuple[float, ...] = (0.5,),
+) -> SimulationConfig:
     return SimulationConfig(
         fluid=FluidConfig(
             name="Hydrogen",
@@ -66,7 +76,7 @@ def custom_geometry_config(geometry_path: str) -> SimulationConfig:
         tank=TankConfig(
             diameter_ft=25.0,
             height_ft=99.0,
-            fill_fractions=(0.5,),
+            fill_fractions=fill_fractions,
             geometry_path=geometry_path,
         ),
         vent=VentProfileConfig(
@@ -143,6 +153,19 @@ def test_schema_v1_loads_with_empty_geometry_path(tmp_path) -> None:
     assert loaded.tank.geometry_path == ""
 
 
+@pytest.mark.parametrize("version", [0, 3, 2.9, True, "2", None])
+def test_config_schema_version_requires_exact_supported_integer(version) -> None:
+    with pytest.raises(ValueError, match="schema_version"):
+        simulation_config_from_dict({"schema_version": version})
+
+
+def test_absent_config_schema_version_defaults_to_v1() -> None:
+    loaded = simulation_config_from_dict({})
+
+    assert loaded.schema_version == 1
+    assert loaded.tank.geometry_path == ""
+
+
 def test_single_case_uses_exact_custom_geometry_inputs_and_height(tmp_path) -> None:
     kernel = cylinder_kernel(4.0, 8.0)
     package_path = tmp_path / "cylinder.npz"
@@ -183,6 +206,24 @@ def test_single_case_uses_exact_custom_geometry_inputs_and_height(tmp_path) -> N
     assert result.htank_ft == pytest.approx(8.0)
 
 
+def test_run_single_case_has_no_public_geometry_injection() -> None:
+    assert "geometry" not in inspect.signature(run_single_case).parameters
+
+
+def test_run_single_case_cannot_replace_configured_geometry(tmp_path) -> None:
+    package_a = tmp_path / "cylinder-a.npz"
+    package_b = tmp_path / "cylinder-b.npz"
+    save_geometry_package(cylinder_kernel(4.0, 8.0, node_count=17), package_a)
+    save_geometry_package(cylinder_kernel(3.0, 6.0, node_count=17), package_b)
+    supplied_b = load_geometry_package(package_b)
+
+    with pytest.raises(TypeError, match="geometry"):
+        run_single_case(
+            custom_geometry_config(str(package_a)),
+            geometry=supplied_b,
+        )
+
+
 def test_sweep_uses_geometry_package_total_height(tmp_path) -> None:
     package_path = tmp_path / "cylinder.npz"
     save_geometry_package(cylinder_kernel(4.0, 8.0), package_path)
@@ -191,3 +232,35 @@ def test_sweep_uses_geometry_package_total_height(tmp_path) -> None:
 
     scenario = result.scenarios["Fill 50%, eps=height_dep"]
     assert scenario["htank"] == pytest.approx(8.0)
+
+
+def test_two_fill_sweep_loads_geometry_once_and_reports_package_height(
+    tmp_path, monkeypatch
+) -> None:
+    package_path = tmp_path / "cylinder.npz"
+    save_geometry_package(
+        cylinder_kernel(4.0, 8.0, node_count=17),
+        package_path,
+    )
+    load_count = 0
+    real_load = validation_module.load_geometry_package
+
+    def counting_load(path):
+        nonlocal load_count
+        load_count += 1
+        return real_load(path)
+
+    monkeypatch.setattr(validation_module, "load_geometry_package", counting_load)
+
+    result = run_sweep(
+        custom_geometry_config(
+            str(package_path),
+            fill_fractions=(0.25, 0.75),
+        )
+    )
+
+    assert load_count == 1
+    assert result.run_count == 2
+    assert {
+        scenario["htank"] for scenario in result.scenarios.values()
+    } == {8.0}

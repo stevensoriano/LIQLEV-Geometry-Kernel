@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from zipfile import BadZipFile
 
 from liqlev.geometry.package import GeometryPackageError, load_geometry_package
 from liqlev.geometry.schema import GeometryKernel
@@ -29,13 +28,10 @@ class InputValidationError(ValueError):
         )
 
 
-def validate_simulation_config(
-    config: SimulationConfig,
-    *,
-    geometry: GeometryKernel | None = None,
-) -> GeometryKernel | None:
+def validate_simulation_config(config: SimulationConfig) -> GeometryKernel | None:
     """Validate config values that affect run setup, without touching physics."""
     issues: list[ValidationIssue] = []
+    geometry: GeometryKernel | None = None
 
     if config.fluid.initial_pressure_psia <= config.fluid.final_pressure_psia:
         issues.append(
@@ -54,8 +50,15 @@ def validate_simulation_config(
             ValidationIssue("tank.height_ft", "Tank height must be positive.")
         )
 
-    if config.tank.geometry_path:
-        geometry_path = Path(config.tank.geometry_path)
+    geometry_path_value = config.tank.geometry_path
+    if not isinstance(geometry_path_value, str):
+        issues.append(
+            ValidationIssue(
+                "tank.geometry_path", "Geometry package path must be a string."
+            )
+        )
+    elif geometry_path_value:
+        geometry_path = Path(geometry_path_value)
         metadata_path = geometry_path.with_suffix(".json")
         if geometry_path.suffix.lower() != ".npz":
             issues.append(
@@ -78,18 +81,10 @@ def validate_simulation_config(
                     f"Geometry metadata not found: {metadata_path}",
                 )
             )
-        elif geometry is None:
+        else:
             try:
                 geometry = load_geometry_package(geometry_path)
-            except (
-                GeometryPackageError,
-                OSError,
-                EOFError,
-                KeyError,
-                TypeError,
-                ValueError,
-                BadZipFile,
-            ) as exc:
+            except GeometryPackageError as exc:
                 issues.append(
                     ValidationIssue(
                         "tank.geometry_path", f"Invalid geometry package: {exc}"
