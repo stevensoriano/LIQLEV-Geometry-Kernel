@@ -1,8 +1,8 @@
 # LIQLEV Arbitrary Tank Geometry Design
 
 **Date:** 2026-07-23  
-**Status:** Approved architecture; written-spec review pending  
-**Repository:** `C:\Users\sasorian\Documents\Eta_Space\LIQLEV-Arbitrary-Geometry`  
+**Status:** Approved  
+**Repository:** `C:\Users\sasorian\Documents\Eta_Space\LIQLEV-Geometry-Kernel`  
 **Height and gravity axis:** assembly `+Y`
 
 ## 1. Purpose
@@ -372,7 +372,7 @@ outside phase one.
 
 All generated source, reports, tests, and CAD outputs will remain under:
 
-`C:\Users\sasorian\Documents\Eta_Space\LIQLEV-Arbitrary-Geometry`
+`C:\Users\sasorian\Documents\Eta_Space\LIQLEV-Geometry-Kernel`
 
 The repository uses a new `main` history. Planned history boundaries are:
 
