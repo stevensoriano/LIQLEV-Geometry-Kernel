@@ -124,6 +124,24 @@ def test_inverse_nonlinear_result_stays_within_height_tolerance() -> None:
     )
 
 
+def test_inverse_accepts_feasible_residual_for_arbitrary_nonlinear_target() -> None:
+    height = np.array([0.0, 1.0, 2.0, 3.0])
+    volume = np.array([0.0, 1.0, 8.0, 27.0])
+    coefficients = pchip_coefficients(height, volume)
+    target = 1.2690000000000001
+    result = invert_monotone_volume(target, height, volume, coefficients)
+    local_dvdh = abs(eval_ppoly_derivative(result, height, coefficients))
+    volume_ulp = np.spacing(max(abs(target), 1.0))
+    height_ulp = np.spacing(max(abs(result), 1.0))
+    allowed_volume_error = max(
+        volume_ulp, 2.0 * local_dvdh * height_ulp
+    )
+
+    assert abs(eval_ppoly(result, height, coefficients) - target) <= (
+        allowed_volume_error
+    )
+
+
 def test_runtime_functions_compile_without_object_mode() -> None:
     height = np.array([0.0, 1.0, 2.0])
     volume = height**2

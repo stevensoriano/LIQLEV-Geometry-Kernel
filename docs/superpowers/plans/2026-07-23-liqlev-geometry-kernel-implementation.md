@@ -644,7 +644,10 @@ height acceptance bound is
 `max(base_height_tolerance, 2 * volume_ulp / max(abs(local_dVdh), tiny))`,
 where `volume_ulp = spacing(max(abs(target_volume), 1.0))`. The returned
 height must remain inside the final monotone bracket (its midpoint), and its
-forward interpolated volume must agree with the target within one float64 ULP.
+forward interpolated volume must agree with the target within
+`max(volume_ulp, 2 * abs(local_dVdh) * height_ulp)`, where
+`height_ulp = spacing(max(abs(candidate_height), 1.0))`. One-volume-ULP
+agreement remains required whenever representable height resolution permits it.
 
 Use this complete implementation:
 
@@ -750,6 +753,7 @@ def invert_monotone_volume(
     )
     tolerance = 1e-12 * max(1.0, height[-1])
     volume_ulp = np.spacing(max(abs(target_volume), 1.0))
+    result = guess
 
     for _ in range(64):
         residual = (
@@ -773,8 +777,6 @@ def invert_monotone_volume(
                 eval_ppoly(result, height, volume_coefficients)
                 - target_volume
             )
-            if result_residual <= volume_ulp:
-                return result
             lower_residual = abs(
                 eval_ppoly(lower, height, volume_coefficients)
                 - target_volume
@@ -783,11 +785,22 @@ def invert_monotone_volume(
                 eval_ppoly(upper, height, volume_coefficients)
                 - target_volume
             )
-            if lower_residual <= upper_residual and lower_residual <= volume_ulp:
-                return lower
-            if upper_residual <= volume_ulp:
-                return upper
-    return 0.5 * (lower + upper)
+            if lower_residual < result_residual:
+                result = lower
+                result_residual = lower_residual
+            if upper_residual < result_residual:
+                result = upper
+                result_residual = upper_residual
+            local_derivative = abs(
+                eval_ppoly_derivative(result, height, volume_coefficients)
+            )
+            height_ulp = np.spacing(max(abs(result), 1.0))
+            allowed_volume_error = max(
+                volume_ulp, 2.0 * local_derivative * height_ulp
+            )
+            if result_residual <= allowed_volume_error:
+                return result
+    return result
 ```
 
 The function bodies implement binary interval search, local cubic Horner
@@ -797,7 +810,8 @@ last height for endpoint volumes. Duplicate-volume nodes use the explicit
 rightmost-node inverse convention. Near a plateau, test height recovery with
 the conditioning-aware bound above rather than the unconditional base height
 tolerance. The midpoint is preferred; a final bracket endpoint is used only
-when it is the more precise in-bracket point under the one-ULP volume check.
+when it is the more precise in-bracket point under the feasible residual
+contract.
 
 - [ ] **Step 5: Verify values and nopython compilation**
 

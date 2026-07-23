@@ -94,6 +94,7 @@ def invert_monotone_volume(
     )
     tolerance = 1e-12 * max(1.0, height[-1])
     volume_ulp = np.spacing(max(abs(target_volume), 1.0))
+    result = guess
 
     for _ in range(64):
         residual = eval_ppoly(guess, height, volume_coefficients) - target_volume
@@ -111,16 +112,25 @@ def invert_monotone_volume(
             result_residual = abs(
                 eval_ppoly(result, height, volume_coefficients) - target_volume
             )
-            if result_residual <= volume_ulp:
-                return result
             lower_residual = abs(
                 eval_ppoly(lower, height, volume_coefficients) - target_volume
             )
             upper_residual = abs(
                 eval_ppoly(upper, height, volume_coefficients) - target_volume
             )
-            if lower_residual <= upper_residual and lower_residual <= volume_ulp:
-                return lower
-            if upper_residual <= volume_ulp:
-                return upper
-    return 0.5 * (lower + upper)
+            if lower_residual < result_residual:
+                result = lower
+                result_residual = lower_residual
+            if upper_residual < result_residual:
+                result = upper
+                result_residual = upper_residual
+            local_derivative = abs(
+                eval_ppoly_derivative(result, height, volume_coefficients)
+            )
+            height_ulp = np.spacing(max(abs(result), 1.0))
+            allowed_volume_error = max(
+                volume_ulp, 2.0 * local_derivative * height_ulp
+            )
+            if result_residual <= allowed_volume_error:
+                return result
+    return result
