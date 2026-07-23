@@ -12,7 +12,8 @@ __pycache__/
 results/
 *.xlsx
 *.csv
-!data/5s_drop_tower_extracted_az_positive_data.csv # Keep the input data, but ignore output data
+# Keep the input data, but ignore output data.
+!data/5s_drop_tower_extracted_az_positive_data.csv
 
 # Virtual Environments
 venv/
@@ -28,6 +29,7 @@ validation/baselines/*.json
 build/
 dist/
 *.spec
+!packaging/liqlev_qt.spec
 
 # Claude Code
 .claude/
