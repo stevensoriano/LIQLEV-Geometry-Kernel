@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import numpy as np
 import pytest
 
+from liqlev.geometry.fixtures import cylinder_kernel
+from liqlev.geometry.package import save_geometry_package
 from liqlev.model.builder import G_TO_FT_S2, build_inputs, safe_eval_gravity
 from liqlev.model.config import FluidConfig, RunControls, SimulationConfig, TankConfig
 from liqlev.model.parsing import parse_numeric_array
@@ -60,6 +65,7 @@ def test_build_inputs_matches_validation_case_setup_for_as203() -> None:
         tinit_override=case.tinit_override_r,
     )
 
+    assert set(actual) == set(expected)
     for key, value in expected.items():
         if key == "Title":
             continue
@@ -88,3 +94,68 @@ def test_safe_gravity_eval_and_validation_errors_are_field_level() -> None:
     assert "tank.diameter_ft" in fields
     assert "tank.fill_fractions[0]" in fields
     assert "run.timestep_s" in fields
+
+
+def test_missing_geometry_npz_is_attributed_to_geometry_path(tmp_path) -> None:
+    config = SimulationConfig(
+        tank=TankConfig(geometry_path=str(tmp_path / "missing.npz"))
+    )
+
+    with pytest.raises(InputValidationError) as exc_info:
+        validate_simulation_config(config)
+
+    assert "tank.geometry_path" in {
+        issue.field for issue in exc_info.value.issues
+    }
+
+
+def test_missing_geometry_metadata_is_attributed_to_geometry_path(tmp_path) -> None:
+    package_path = tmp_path / "tank.npz"
+    np.savez(package_path, placeholder=np.array([1.0]))
+    config = SimulationConfig(tank=TankConfig(geometry_path=str(package_path)))
+
+    with pytest.raises(InputValidationError) as exc_info:
+        validate_simulation_config(config)
+
+    assert "tank.geometry_path" in {
+        issue.field for issue in exc_info.value.issues
+    }
+
+
+def test_geometry_package_hash_error_is_attributed_to_geometry_path(tmp_path) -> None:
+    package_path = tmp_path / "tank.npz"
+    save_geometry_package(cylinder_kernel(4.0, 8.0, node_count=17), package_path)
+    metadata_path = package_path.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["npz_sha256"] = "0" * 64
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    config = SimulationConfig(tank=TankConfig(geometry_path=str(package_path)))
+
+    with pytest.raises(InputValidationError) as exc_info:
+        validate_simulation_config(config)
+
+    issues = [
+        issue
+        for issue in exc_info.value.issues
+        if issue.field == "tank.geometry_path"
+    ]
+    assert len(issues) == 1
+    assert "SHA-256" in issues[0].message
+
+
+def test_corrupt_geometry_archive_is_attributed_to_geometry_path(tmp_path) -> None:
+    package_path = tmp_path / "tank.npz"
+    save_geometry_package(cylinder_kernel(4.0, 8.0, node_count=17), package_path)
+    package_path.write_bytes(b"not a valid numpy archive")
+    metadata_path = package_path.with_suffix(".json")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["npz_sha256"] = hashlib.sha256(package_path.read_bytes()).hexdigest()
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    config = SimulationConfig(tank=TankConfig(geometry_path=str(package_path)))
+
+    with pytest.raises(InputValidationError) as exc_info:
+        validate_simulation_config(config)
+
+    assert "tank.geometry_path" in {
+        issue.field for issue in exc_info.value.issues
+    }

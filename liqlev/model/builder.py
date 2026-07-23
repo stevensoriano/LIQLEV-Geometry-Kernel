@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from liqlev.geometry.jit import invert_monotone_volume
+from liqlev.geometry.schema import GeometryKernel
 from thermo_utils import DensitySat, Psat, Tsat
 
 
@@ -40,6 +42,7 @@ def build_inputs(
     gravity_function: Callable[[float], float] | None = None,
     xmlzro_override: float | None = None,
     tinit_override: float | None = None,
+    geometry: GeometryKernel | None = None,
 ) -> dict[str, Any]:
     """Build the input dictionary consumed by ``core.liqlev_simulation``."""
     volt = (np.pi / 4) * (dtank**2) * htank
@@ -66,8 +69,20 @@ def build_inputs(
         ps_kpa = Psat(fluid, t_k)
         rhol = DensitySat(fluid, "liquid", ps_kpa) * 0.0624279606
 
-    xmlzro = rhol * (htzero * ac)
-    if xmlzro_override is not None:
+    if geometry is not None:
+        volt = geometry.total_volume_ft3
+        htzero = float(
+            invert_monotone_volume(
+                fill_fraction * volt,
+                geometry.height_ft,
+                geometry.volume_ft3,
+                geometry.volume_coefficients,
+            )
+        )
+        xmlzro = rhol * fill_fraction * volt
+    else:
+        xmlzro = rhol * (htzero * ac)
+    if geometry is None and xmlzro_override is not None:
         xmlzro = xmlzro_override
 
     if duration > ramp_duration:
@@ -92,7 +107,7 @@ def build_inputs(
             [0.0, 0.0513, 0.178, 0.28, 0.362, 0.422, 0.47, 0.52, 0.56, 0.6, 0.6]
         )
 
-    return {
+    inputs = {
         "Title": "LIQLEV GUI Simulation",
         "Liquid": fluid,
         "Units": "British",
@@ -122,6 +137,21 @@ def build_inputs(
         "Xggo": xggo,
         "gravity_function": gravity_function,
     }
+    if geometry is not None:
+        inputs.update(
+            {
+                "GeometryMode": 1,
+                "FillFraction": fill_fraction,
+                "GeomHeight": geometry.height_ft,
+                "GeomVolume": geometry.volume_ft3,
+                "GeomVolumeCoefficients": geometry.volume_coefficients,
+                "GeomAreaSamples": geometry.section_area_ft2,
+                "GeomPerimeter": geometry.perimeter_ft,
+                "GeomSidewallArea": geometry.sidewall_area_ft2,
+                "GeomSidewallCoefficients": geometry.sidewall_coefficients,
+            }
+        )
+    return inputs
 
 
 def calculate_epsilon(h: float, dtank: float) -> float:

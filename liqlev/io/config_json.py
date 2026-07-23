@@ -18,7 +18,7 @@ from liqlev.model.config import (
 )
 
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 
 def simulation_config_to_dict(config: SimulationConfig) -> dict[str, Any]:
@@ -31,7 +31,7 @@ def simulation_config_to_dict(config: SimulationConfig) -> dict[str, Any]:
 def simulation_config_from_dict(payload: dict[str, Any]) -> SimulationConfig:
     """Build a typed config from a versioned dictionary."""
     version = int(payload.get("schema_version", 1))
-    if version != CONFIG_SCHEMA_VERSION:
+    if version not in (1, CONFIG_SCHEMA_VERSION):
         raise ValueError(f"Unsupported config schema_version: {version}")
 
     fluid_data = dict(payload.get("fluid", {}))
@@ -41,6 +41,8 @@ def simulation_config_from_dict(payload: dict[str, Any]) -> SimulationConfig:
     epsilon_data = dict(payload.get("epsilon", {}))
     run_data = dict(payload.get("run", {}))
 
+    if version == 1:
+        tank_data["geometry_path"] = ""
     if "fill_fractions" in tank_data:
         tank_data["fill_fractions"] = tuple(tank_data["fill_fractions"])
     if "rates_lbm_s" in vent_data:

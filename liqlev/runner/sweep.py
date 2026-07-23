@@ -42,7 +42,7 @@ def run_sweep(
     config: SimulationConfig, progress_cb: ProgressCallback | None = None
 ) -> SweepResult:
     """Run fill x epsilon x vent sweeps without starting a GUI."""
-    validate_simulation_config(config)
+    geometry = validate_simulation_config(config)
 
     fills = tuple(config.tank.fill_fractions)
     eps_values = epsilon_specs(config)
@@ -78,6 +78,7 @@ def run_sweep(
                     progress_cb=progress_cb,
                     run_index=run_index,
                     total_runs=total_runs,
+                    geometry=geometry,
                 )
                 scenario_key = result.scenario_key
                 epsilon_label = result.epsilon_label
@@ -90,7 +91,7 @@ def run_sweep(
                     "vent_rates": scenario_rates,
                     "fill": fill_fraction,
                     "eps_label": epsilon_label,
-                    "htank": config.tank.height_ft,
+                    "htank": result.htank_ft,
                 }
 
     elapsed_s = time.perf_counter() - start

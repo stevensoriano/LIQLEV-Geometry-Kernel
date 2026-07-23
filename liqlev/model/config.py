@@ -25,6 +25,7 @@ class TankConfig:
     diameter_ft: float = 21.670
     height_ft: float = 28.18
     fill_fractions: tuple[float, ...] = (0.5116,)
+    geometry_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,4 +66,4 @@ class SimulationConfig:
     gravity: GravityProfileConfig = field(default_factory=GravityProfileConfig)
     epsilon: EpsilonConfig = field(default_factory=EpsilonConfig)
     run: RunControls = field(default_factory=RunControls)
-    schema_version: int = 1
+    schema_version: int = 2

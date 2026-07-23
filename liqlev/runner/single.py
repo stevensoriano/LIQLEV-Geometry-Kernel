@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from core import liqlev_simulation
+from liqlev.geometry.schema import GeometryKernel
 from liqlev.io.profiles import (
     ProfileData,
     load_gravity_profile_csv,
@@ -121,9 +122,10 @@ def run_single_case(
     progress_cb: ProgressCallback | None = None,
     run_index: int | None = None,
     total_runs: int | None = None,
+    geometry: GeometryKernel | None = None,
 ) -> SingleCaseResult:
     """Run one LIQLEV case without constructing any GUI objects."""
-    validate_simulation_config(config)
+    geometry = validate_simulation_config(config, geometry=geometry)
 
     fill = config.tank.fill_fractions[0] if fill_fraction is None else fill_fraction
     vent_rate = (
@@ -183,6 +185,7 @@ def run_single_case(
         gravity_function=gravity.gravity_function,
         xmlzro_override=config.fluid.initial_mass_lbm,
         tinit_override=config.fluid.initial_temperature_r,
+        geometry=geometry,
     )
 
     if loaded_vent_profile is not None:
@@ -242,7 +245,11 @@ def run_single_case(
         vent_rate_lbm_s=vent_rate,
         fill_fraction=fill,
         epsilon_label=epsilon_label,
-        htank_ft=config.tank.height_ft,
+        htank_ft=(
+            geometry.total_height_ft
+            if geometry is not None
+            else config.tank.height_ft
+        ),
         elapsed_s=elapsed_s,
         warnings=tuple(warnings),
     )
