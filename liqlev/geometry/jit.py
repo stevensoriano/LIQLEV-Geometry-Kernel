@@ -134,3 +134,115 @@ def invert_monotone_volume(
             if result_residual <= allowed_volume_error:
                 return result
     return result
+
+
+@njit(cache=True)
+def _boundary_layer_derivatives(
+    h: float,
+    q: float,
+    height: np.ndarray,
+    volume_coefficients: np.ndarray,
+    perimeter_values: np.ndarray,
+    ak3: float,
+) -> tuple[float, float]:
+    perimeter = interp_linear_nonnegative(h, height, perimeter_values)
+    if perimeter <= 0.0:
+        if q <= 0.0:
+            delta = 0.0
+        else:
+            return np.nan, np.nan
+    else:
+        delta = (1.5 * max(q, 0.0) / perimeter) ** (2.0 / 3.0)
+    area = eval_ppoly_derivative(h, height, volume_coefficients)
+    return ak3 * (area - perimeter * delta), perimeter * delta
+
+
+@njit(cache=True)
+def integrate_boundary_layer(
+    ak3: float,
+    top_height: float,
+    height: np.ndarray,
+    volume_coefficients: np.ndarray,
+    perimeter_values: np.ndarray,
+    substeps: int,
+) -> tuple[float, float, float, int]:
+    if (
+        ak3 <= 0.0
+        or not np.isfinite(ak3)
+        or not np.isfinite(top_height)
+        or top_height < height[0]
+        or top_height > height[-1]
+        or substeps <= 0
+    ):
+        return np.nan, np.nan, np.nan, 1
+
+    q = 0.0
+    vbl = 0.0
+    interval_count = len(height) - 1
+    for interval in range(interval_count):
+        lower = height[interval]
+        if lower >= top_height:
+            break
+        upper = min(height[interval + 1], top_height)
+        step = (upper - lower) / substeps
+        h = lower
+        for _ in range(substeps):
+            k1_q, k1_vbl = _boundary_layer_derivatives(
+                h,
+                q,
+                height,
+                volume_coefficients,
+                perimeter_values,
+                ak3,
+            )
+            k2_q, k2_vbl = _boundary_layer_derivatives(
+                h + 0.5 * step,
+                q + 0.5 * step * k1_q,
+                height,
+                volume_coefficients,
+                perimeter_values,
+                ak3,
+            )
+            k3_q, k3_vbl = _boundary_layer_derivatives(
+                h + 0.5 * step,
+                q + 0.5 * step * k2_q,
+                height,
+                volume_coefficients,
+                perimeter_values,
+                ak3,
+            )
+            k4_q, k4_vbl = _boundary_layer_derivatives(
+                h + step,
+                q + step * k3_q,
+                height,
+                volume_coefficients,
+                perimeter_values,
+                ak3,
+            )
+            q = max(
+                0.0,
+                q + step * (k1_q + 2.0 * k2_q + 2.0 * k3_q + k4_q) / 6.0,
+            )
+            vbl = max(
+                0.0,
+                vbl
+                + step
+                * (k1_vbl + 2.0 * k2_vbl + 2.0 * k3_vbl + k4_vbl)
+                / 6.0,
+            )
+            if not np.isfinite(q) or not np.isfinite(vbl):
+                return np.nan, np.nan, np.nan, 1
+            h += step
+
+    perimeter_top = interp_linear_nonnegative(
+        top_height, height, perimeter_values
+    )
+    if perimeter_top <= 0.0:
+        if q > 0.0:
+            return np.nan, np.nan, np.nan, 1
+        delta_top = 0.0
+    else:
+        delta_top = (1.5 * q / perimeter_top) ** (2.0 / 3.0)
+    if not np.isfinite(delta_top):
+        return np.nan, np.nan, np.nan, 1
+    return delta_top, vbl, q, 0

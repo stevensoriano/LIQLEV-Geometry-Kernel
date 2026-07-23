@@ -855,7 +855,12 @@ git commit -m "feat: add JIT geometry interpolation and inversion"
 - Consumes: `AK3`, top height, volume cubic coefficients, height nodes, and perimeter nodes.
 - Produces: `integrate_boundary_layer(ak3, top_height, height, volume_coefficients, perimeter, substeps) -> (delta_top, vbl, normalized_exit_flow, status)`.
 
-- [ ] **Step 1: Write the failing analytic-cylinder test**
+- **Physics authority:** custom mode follows NASA NTRS 19700017832 Eq. 4-33,
+  4-37, and 4-38. The legacy cylinder branch and saved baseline remain
+  unchanged. See
+  [`docs/physics/legacy-series-discrepancy.md`](../../physics/legacy-series-discrepancy.md).
+
+- [ ] **Step 1: Write the failing report-cylinder test**
 
 Create `tests/geometry/test_boundary_layer.py` with:
 
@@ -869,50 +874,35 @@ from liqlev.geometry.fixtures import cylinder_kernel
 from liqlev.geometry.jit import integrate_boundary_layer
 
 
-def legacy_cylinder_profile(
+def report_cylinder_profile(
     diameter_ft: float, ak3: float, height_ft: float
 ) -> tuple[float, float, float]:
-    powers = np.arange(1.0, 11.0)
-    coeff_s1 = (
-        4.0 ** (powers - 1.0)
-        / diameter_ft**powers
-        / (2.0**powers + 1.0)
+    # Solve Eq. 4-33:
+    # height = (8/ak3) * sum[
+    #     4**(n-1) * delta**(n+1/2) / ((2*n+1) * diameter**n)
+    # ]
+    delta = solve_report_height_series(diameter_ft, ak3, height_ft)
+    # Eq. 4-38:
+    vbl = sum(
+        (8.0 * np.pi / ak3)
+        * 4.0 ** (n - 1)
+        / ((2.0 * n + 3.0) * diameter_ft ** (n - 1))
+        * delta ** (n + 1.5)
+        for n in converged_positive_integers()
     )
-    delta = (0.375 * diameter_ft * ak3 * height_ft) ** (2.0 / 3.0)
-    for _ in range(30):
-        residual = (
-            8.0
-            * np.sum(coeff_s1 * delta ** (powers + 0.5))
-            / ak3
-            - height_ft
-        )
-        derivative = (
-            4.0
-            * np.sum(
-                4.0 ** (powers - 1.0)
-                / diameter_ft**powers
-                * delta ** (powers - 0.5)
-            )
-            / ak3
-        )
-        delta -= residual / derivative
-    coeff_vbl = (
-        (2.0 * powers + 1.0)
-        / (powers + 1.5)
-        / diameter_ft ** (powers - 1.0)
-    )
-    vbl = np.pi * np.sum(coeff_vbl * delta ** (powers + 1.5)) / ak3
     normalized_exit = (2.0 / 3.0) * np.pi * diameter_ft * delta**1.5
     return float(delta), float(vbl), float(normalized_exit)
 
 
 @pytest.mark.parametrize("fill", [0.1, 0.25, 0.5, 0.8, 0.95])
-def test_numeric_cylinder_boundary_layer_matches_heritage(fill: float) -> None:
+def test_numeric_cylinder_boundary_layer_matches_published_report(
+    fill: float,
+) -> None:
     diameter = 4.0
     tank_height = 8.0
     kernel = cylinder_kernel(diameter, tank_height, node_count=1025)
     top_height = fill * tank_height
-    expected = legacy_cylinder_profile(diameter, 0.015, top_height)
+    expected = report_cylinder_profile(diameter, 0.015, top_height)
     actual = integrate_boundary_layer(
         0.015,
         top_height,
@@ -974,6 +964,8 @@ def cylinder_kernel(
     volume = area * h
     wall = perimeter * h
     cap = area
+    total_wetted = cap + wall
+    total_wetted[-1] += cap
     return GeometryKernel(
         metadata=_metadata("analytic-cylinder", height_ft),
         height_ft=np.ascontiguousarray(h),
@@ -983,7 +975,7 @@ def cylinder_kernel(
         perimeter_ft=np.full(node_count, perimeter),
         sidewall_area_ft2=np.ascontiguousarray(wall),
         sidewall_coefficients=pchip_coefficients(h, wall),
-        total_wetted_area_ft2=np.ascontiguousarray(cap + wall),
+        total_wetted_area_ft2=np.ascontiguousarray(total_wetted),
     )
 ```
 
@@ -995,6 +987,7 @@ area = np.pi * (2.0 * radius_ft * h - h**2)
 volume = np.pi * h**2 * (radius_ft - h / 3.0)
 perimeter = 2.0 * np.pi * np.sqrt(np.maximum(0.0, 2.0 * radius_ft * h - h**2))
 sidewall = 2.0 * np.pi * radius_ft * h
+total_wetted = sidewall
 ```
 
 - [ ] **Step 4: Implement the Numba boundary-layer integrator**
@@ -1025,6 +1018,10 @@ python -m pytest tests/geometry/test_boundary_layer.py tests/geometry/test_jit_i
 ```
 
 Expected: all tests pass and the cylinder comparison stays within `0.1%`.
+Record the per-fill relative errors for boundary-layer thickness, volume, and
+normalized exit flow. Also run the unchanged saved legacy baseline checker;
+the report-correct custom cylinder, not current FORTRAN/JIT output, is the
+custom-mode boundary-layer acceptance reference.
 
 - [ ] **Step 6: Commit**
 
@@ -1045,66 +1042,23 @@ git commit -m "feat: generalize boundary layer by local perimeter"
 - Consumes: solver input key `GeometryMode` and the seven numeric geometry arrays.
 - Produces: the existing 29-column DataFrame with custom `Height`, `dh/dt`, `eps`, `VBL vol`, `BL thick`, and `BL Vap Out`; cylinder inputs remain unchanged.
 
-- [ ] **Step 1: Write a failing cylinder-equivalence integration test**
+- [ ] **Step 1: Write failing authority-split integration tests**
 
-Create `tests/geometry/test_core_custom_geometry.py`:
+Create `tests/geometry/test_core_custom_geometry.py` with separate assertions
+for the two authorities:
 
-```python
-from __future__ import annotations
+1. Run `scripts/check_physics_baseline.py` unchanged and require it to pass at
+   its existing `rtol=1e-9`, `atol=1e-8`; this is the legacy-mode contract.
+2. Feed the analytic cylinder fixture through custom mode and check height,
+   interface area, wetted side area, fill-volume inversion, and other
+   geometry/kinematics terms against exact cylinder relations.
+3. At fills `[0.1, 0.25, 0.5, 0.8, 0.95]`, check custom `BL thick`, `VBL vol`,
+   and normalized exit flow against the published Eq. 4-33, 4-37, and 4-38
+   analytic cylinder solution within `rtol=1e-3` (0.1%).
 
-import numpy as np
-import pandas as pd
-
-from core import liqlev_simulation
-from liqlev.geometry.fixtures import cylinder_kernel
-from validation.physics_cases import build_case_inputs, get_case
-
-
-def attach_geometry(
-    inputs: dict[str, object],
-    diameter: float,
-    height: float,
-    fill_fraction: float,
-) -> None:
-    kernel = cylinder_kernel(diameter, height, node_count=1025)
-    inputs.update(
-        {
-            "GeometryMode": 1,
-            "GeomHeight": kernel.height_ft,
-            "GeomVolume": kernel.volume_ft3,
-            "GeomVolumeCoefficients": kernel.volume_coefficients,
-            "GeomArea": kernel.section_area_ft2,
-            "GeomPerimeter": kernel.perimeter_ft,
-            "GeomSidewallArea": kernel.sidewall_area_ft2,
-            "GeomSidewallCoefficients": kernel.sidewall_coefficients,
-            "FillFraction": fill_fraction,
-        }
-    )
-
-
-def test_custom_cylinder_matches_legacy_solver() -> None:
-    case = get_case("hydrogen_height_dep_mid_fill")
-    legacy_inputs = build_case_inputs(case)
-    custom_inputs = build_case_inputs(case)
-    attach_geometry(
-        custom_inputs,
-        case.dtank_ft,
-        case.htank_ft,
-        case.fill_fraction,
-    )
-    custom_inputs["Dtank"] = 0.75 * case.dtank_ft
-    legacy = liqlev_simulation(legacy_inputs, verbose=False)
-    custom = liqlev_simulation(custom_inputs, verbose=False)
-    columns = ["Height", "eps", "VBL vol", "BL thick", "BL Vap Out"]
-    pd.testing.assert_frame_equal(
-        custom[columns],
-        legacy[columns],
-        rtol=1e-3,
-        atol=1e-10,
-        check_exact=False,
-    )
-    assert np.all(custom["Conv Failed"].to_numpy() == 0.0)
-```
+Do not compare custom boundary-layer outputs to the current FORTRAN/JIT legacy
+transcription. The known series discrepancy is intentional under the approved
+authority split.
 
 - [ ] **Step 2: Run the test and confirm custom inputs are not yet used**
 
@@ -1114,8 +1068,9 @@ Run:
 python -m pytest tests/geometry/test_core_custom_geometry.py -q
 ```
 
-Expected: the equivalence assertion fails because `core.py` still uses the
-deliberately inconsistent `Dtank` instead of the attached geometry arrays.
+Expected: custom geometry/kinematics and report-boundary assertions fail
+because `core.py` does not yet use the attached geometry arrays. The unchanged
+legacy baseline continues to pass.
 
 - [ ] **Step 3: Add geometry arguments to `_solver_loop`**
 
@@ -1215,8 +1170,10 @@ python -m pytest tests/geometry/test_core_custom_geometry.py -q
 python scripts/check_physics_baseline.py
 ```
 
-Expected: custom-cylinder equivalence passes within `0.1%`, and the legacy
-physics baseline passes at `rtol=1e-9`, `atol=1e-8`.
+Expected: the legacy physics baseline passes unchanged at `rtol=1e-9`,
+`atol=1e-8`; custom cylinder geometry/kinematics match exact relations; and
+custom boundary-layer thickness, volume, and normalized exit flow match the
+report-correct analytic cylinder within `0.1%`.
 
 - [ ] **Step 7: Commit**
 

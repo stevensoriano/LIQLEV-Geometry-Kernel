@@ -46,13 +46,20 @@ sharing or editing files in place. The imported baseline will be committed
 before geometry changes so the new history clearly separates the preserved
 solver from the arbitrary-geometry capability.
 
-### 2.3 Physics reference
+### 2.3 Physics reference and authority split
 
-The governing heritage reference is NASA report NTRS 19700017832, especially
+NASA report NTRS 19700017832 governs the new/custom geometry mode, especially
 the boundary-layer development in section 4.3 and equations 4-25, 4-33,
 4-36, 4-37, and 4-38:
 
 `https://ntrs.nasa.gov/api/citations/19700017832/downloads/19700017832.pdf`
+
+The existing legacy cylinder branch and its saved regression baseline remain
+the authority for legacy mode and are not rewritten to match the report.
+Where the legacy transcription differs from the published series, custom mode
+follows the report. The derivation, discrepancy, units, numerical method, and
+validation boundary are documented in
+[`docs/physics/legacy-series-discrepancy.md`](../../physics/legacy-series-discrepancy.md).
 
 ## 3. Examined Geometry
 
@@ -274,11 +281,12 @@ balance:
 `d/dh[(2/3) * P(h) * delta(h)^(3/2)] =
     AK3 * [A(h) - P(h)*delta(h)]`
 
-This equation reduces to the heritage constant-diameter form when `A` and `P`
-are constant. It is integrated over geometry intervals with non-negative,
-safeguarded states. The solver computes `V_BL` with the same interval
-quadrature. It never substitutes an equivalent diameter for the actual
-section geometry.
+For constant cylinder `A=pi*D^2/4` and `P=pi*D`, this equation reduces to the
+published Eq. 4-33 solution. It does not reproduce every coefficient in the
+existing legacy transcription. Custom mode is integrated over geometry
+intervals with non-negative, safeguarded states and computes `V_BL` with the
+same interval quadrature. It never substitutes an equivalent diameter for the
+actual section geometry.
 
 The existing coefficient `2.1` remains untouched in legacy mode. Custom mode
 uses the explicit `2/3` perimeter form so the generalization is traceable to
@@ -337,11 +345,15 @@ boundary-layer integration.
 
 ### 10.2 Solver tests
 
-- Preserve all existing legacy-cylinder results.
+- Preserve all existing legacy-cylinder results by running the saved legacy
+  physics baseline unchanged.
 - Feed an analytic cylinder through the custom numeric path.
-- Require custom-cylinder height, interface area, wetted side area,
-  boundary-layer volume, and exit-flow terms to agree with the analytic
-  cylinder path within `0.1%` across the supported fill range.
+- Check custom-cylinder height, interface area, wetted side area, and other
+  geometry/kinematics terms against exact cylinder relations.
+- Check custom-cylinder boundary-layer thickness, volume, and normalized exit
+  flow against the published Eq. 4-33, 4-37, and 4-38 cylinder solution within
+  `0.1%` across the supported fill range. The current FORTRAN/JIT legacy
+  boundary-layer outputs are not a custom-mode acceptance reference.
 - Verify volume conservation for fill, drain, vent, and pressure-driven
   transients.
 - Verify exact endpoint handling for empty and full table bounds.
@@ -356,7 +368,8 @@ boundary-layer integration.
 The tank is accepted for development use when:
 
 - all CAD and geometry-table criteria pass;
-- the custom-cylinder equivalence test passes;
+- the custom-cylinder analytic geometry checks and report-authoritative
+  boundary-layer checks pass;
 - tank results are invariant within `0.2%` for height and boundary-layer
   volume when the geometry table is refined from 513 to 1025 evaluation
   points;
