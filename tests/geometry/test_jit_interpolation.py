@@ -12,6 +12,21 @@ from liqlev.geometry.jit import (
 )
 
 
+def _conditioning_aware_height_tolerance(
+    target_volume: float,
+    result_height: float,
+    height: np.ndarray,
+    coefficients: np.ndarray,
+) -> float:
+    base_height_tolerance = 1e-12 * max(1.0, height[-1])
+    volume_ulp = np.spacing(max(abs(target_volume), 1.0))
+    local_dvdh = abs(eval_ppoly_derivative(result_height, height, coefficients))
+    return max(
+        base_height_tolerance,
+        2.0 * volume_ulp / max(local_dvdh, np.finfo(np.float64).tiny),
+    )
+
+
 def test_linear_volume_is_exact_and_invertible() -> None:
     height = np.linspace(0.0, 4.0, 9)
     volume = 3.25 * height
@@ -80,10 +95,33 @@ def test_inverse_resolves_height_near_interior_plateau() -> None:
     coefficients = pchip_coefficients(height, volume)
     expected_height = 2.000001
     target = eval_ppoly(expected_height, height, coefficients)
+    result = invert_monotone_volume(target, height, volume, coefficients)
 
-    assert invert_monotone_volume(
-        target, height, volume, coefficients
-    ) == pytest.approx(expected_height, abs=1e-12 * max(1.0, height[-1]))
+    assert result == pytest.approx(
+        expected_height,
+        abs=_conditioning_aware_height_tolerance(
+            target, result, height, coefficients
+        ),
+    )
+    assert abs(eval_ppoly(result, height, coefficients) - target) <= np.spacing(
+        max(abs(target), 1.0)
+    )
+
+
+def test_inverse_nonlinear_result_stays_within_height_tolerance() -> None:
+    height = np.array([0.0, 1.0, 2.0, 3.0])
+    volume = np.array([0.0, 1.0, 8.0, 27.0])
+    coefficients = pchip_coefficients(height, volume)
+    expected_height = 1.234567
+    target = eval_ppoly(expected_height, height, coefficients)
+    result = invert_monotone_volume(target, height, volume, coefficients)
+
+    assert result == pytest.approx(
+        expected_height, abs=1e-12 * max(1.0, height[-1])
+    )
+    assert abs(eval_ppoly(result, height, coefficients) - target) <= np.spacing(
+        max(abs(target), 1.0)
+    )
 
 
 def test_runtime_functions_compile_without_object_mode() -> None:

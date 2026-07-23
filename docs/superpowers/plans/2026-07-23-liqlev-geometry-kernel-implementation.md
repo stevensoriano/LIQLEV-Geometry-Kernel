@@ -639,6 +639,12 @@ selection must clamp function evaluation at endpoints, while inverse-volume
 must return `NaN` outside `[0, V_total]`. The inverse uses the `volume_ft3`
 nodes to select an interval, then performs at most 64 Newton/bisection
 iterations with a height tolerance of `1e-12 * max(1, total_height)`.
+For a near-flat segment, the inverse contract is conditioning-aware: its
+height acceptance bound is
+`max(base_height_tolerance, 2 * volume_ulp / max(abs(local_dVdh), tiny))`,
+where `volume_ulp = spacing(max(abs(target_volume), 1.0))`. The returned
+height must remain inside the final monotone bracket (its midpoint), and its
+forward interpolated volume must agree with the target within one float64 ULP.
 
 Use this complete implementation:
 
@@ -729,6 +735,9 @@ def invert_monotone_volume(
         else:
             high_index = middle
 
+    if target_volume == volume[low_index]:
+        return height[low_index]
+
     lower = height[low_index]
     upper = height[low_index + 1]
     volume_width = volume[low_index + 1] - volume[low_index]
@@ -740,15 +749,14 @@ def invert_monotone_volume(
         * (upper - lower)
     )
     tolerance = 1e-12 * max(1.0, height[-1])
+    volume_ulp = np.spacing(max(abs(target_volume), 1.0))
 
     for _ in range(64):
         residual = (
             eval_ppoly(guess, height, volume_coefficients)
             - target_volume
         )
-        if abs(residual) <= 1e-13 * max(1.0, volume[-1]):
-            return guess
-        if residual < 0.0:
+        if residual <= 0.0:
             lower = guess
         else:
             upper = guess
@@ -760,14 +768,36 @@ def invert_monotone_volume(
             candidate = 0.5 * (lower + upper)
         guess = candidate
         if upper - lower <= tolerance:
-            return guess
-    return guess
+            result = 0.5 * (lower + upper)
+            result_residual = abs(
+                eval_ppoly(result, height, volume_coefficients)
+                - target_volume
+            )
+            if result_residual <= volume_ulp:
+                return result
+            lower_residual = abs(
+                eval_ppoly(lower, height, volume_coefficients)
+                - target_volume
+            )
+            upper_residual = abs(
+                eval_ppoly(upper, height, volume_coefficients)
+                - target_volume
+            )
+            if lower_residual <= upper_residual and lower_residual <= volume_ulp:
+                return lower
+            if upper_residual <= volume_ulp:
+                return upper
+    return 0.5 * (lower + upper)
 ```
 
 The function bodies implement binary interval search, local cubic Horner
 evaluation, and a bracket-preserving Newton step. A Newton candidate outside
 the active bracket is replaced with its midpoint. Return the exact first or
-last height for endpoint volumes.
+last height for endpoint volumes. Duplicate-volume nodes use the explicit
+rightmost-node inverse convention. Near a plateau, test height recovery with
+the conditioning-aware bound above rather than the unconditional base height
+tolerance. The midpoint is preferred; a final bracket endpoint is used only
+when it is the more precise in-bracket point under the one-ULP volume check.
 
 - [ ] **Step 5: Verify values and nopython compilation**
 
