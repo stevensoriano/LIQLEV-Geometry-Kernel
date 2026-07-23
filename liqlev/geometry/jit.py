@@ -79,6 +79,9 @@ def invert_monotone_volume(
         else:
             high_index = middle
 
+    if target_volume == volume[low_index]:
+        return height[low_index]
+
     lower = height[low_index]
     upper = height[low_index + 1]
     volume_width = volume[low_index + 1] - volume[low_index]
@@ -91,11 +94,9 @@ def invert_monotone_volume(
     )
     tolerance = 1e-12 * max(1.0, height[-1])
 
-    for _ in range(20):
+    for _ in range(64):
         residual = eval_ppoly(guess, height, volume_coefficients) - target_volume
-        if abs(residual) <= 1e-13 * max(1.0, volume[-1]):
-            return guess
-        if residual < 0.0:
+        if residual <= 0.0:
             lower = guess
         else:
             upper = guess
@@ -105,5 +106,5 @@ def invert_monotone_volume(
             candidate = 0.5 * (lower + upper)
         guess = candidate
         if upper - lower <= tolerance:
-            return guess
+            return max(height[low_index], lower - tolerance)
     return guess
