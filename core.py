@@ -702,21 +702,39 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
         geom_sidewall_area = dummy_geometry
         geom_sidewall_coefficients = dummy_coefficients
 
-    perim = np.pi * dtank
-    ac = 0.7854 * (dtank ** 2)
-    htank = volt / ac
     if geometry_mode == 0:
+        perim = np.pi * dtank
+        ac = 0.7854 * (dtank ** 2)
+        htank = volt / ac
         fill = htzero * ac / volt
+        # Pre-compute vectorized coefficients for legacy boundary layer sums
+        _L = np.arange(1, 11, dtype=np.float64)
+        coeff_s1 = (
+            (4.0 ** (_L - 1))
+            / (dtank ** _L)
+            / (2.0 ** _L + 1)
+        )
+        exp_s1 = _L + 0.5
+        coeff_sm = (4.0 ** (_L - 1)) / (dtank ** _L)
+        exp_sm = _L - 0.5
+        coeff_vbl = (
+            (2.0 * _L + 1)
+            / (_L + 1.5)
+            / (dtank ** (_L - 1))
+        )
+        exp_vbl = _L + 1.5
+    else:
+        perim = 0.0
+        ac = 1.0
+        htank = 0.0
+        legacy_array_dummy = np.zeros(10, dtype=np.float64)
+        coeff_s1 = legacy_array_dummy
+        exp_s1 = legacy_array_dummy
+        coeff_sm = legacy_array_dummy
+        exp_sm = legacy_array_dummy
+        coeff_vbl = legacy_array_dummy
+        exp_vbl = legacy_array_dummy
     print(f"Initial % fill volume: {fill * 100:.2f}%")
-
-    # Pre-compute vectorized coefficients for boundary layer sums
-    _L = np.arange(1, 11, dtype=np.float64)
-    coeff_s1 = (4.0 ** (_L - 1)) / (dtank ** _L) / (2.0 ** _L + 1)
-    exp_s1 = _L + 0.5
-    coeff_sm = (4.0 ** (_L - 1)) / (dtank ** _L)
-    exp_sm = _L - 0.5
-    coeff_vbl = (2.0 * _L + 1) / (_L + 1.5) / (dtank ** (_L - 1))
-    exp_vbl = _L + 1.5
 
     # Ensure arrays are float64 contiguous for Numba
     tvmdot = np.ascontiguousarray(tvmdot, dtype=np.float64)

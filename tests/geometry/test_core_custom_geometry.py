@@ -156,6 +156,27 @@ def test_custom_cylinder_uses_volume_and_wetted_geometry_not_legacy_dtank() -> N
     )
 
 
+def test_custom_cylinder_does_not_require_a_nonzero_legacy_dtank() -> None:
+    zero_legacy = _run_custom_cylinder(0.5, legacy_dtank_ft=0.0)
+    positive_legacy = _run_custom_cylinder(0.5, legacy_dtank_ft=1.25)
+    geometry_columns = [
+        "Height",
+        "dh/dt",
+        "eps",
+        "VBL vol",
+        "BL thick",
+        "BL Vap Out",
+    ]
+
+    assert zero_legacy["Conv Failed"] == 0.0
+    np.testing.assert_allclose(
+        zero_legacy[geometry_columns].to_numpy(dtype=float),
+        positive_legacy[geometry_columns].to_numpy(dtype=float),
+        rtol=1e-12,
+        atol=1e-14,
+    )
+
+
 @pytest.mark.parametrize("fill", [0.1, 0.25, 0.5, 0.8, 0.95])
 def test_custom_cylinder_boundary_layer_matches_published_report(
     fill: float,
