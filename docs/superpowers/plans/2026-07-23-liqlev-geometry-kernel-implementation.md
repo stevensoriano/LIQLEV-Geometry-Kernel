@@ -637,7 +637,7 @@ def pchip_coefficients(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 Create `liqlev/geometry/jit.py` with `@njit(cache=True)` functions. Interval
 selection must clamp function evaluation at endpoints, while inverse-volume
 must return `NaN` outside `[0, V_total]`. The inverse uses the `volume_ft3`
-nodes to select an interval, then performs at most 20 Newton/bisection
+nodes to select an interval, then performs at most 64 Newton/bisection
 iterations with a height tolerance of `1e-12 * max(1, total_height)`.
 
 Use this complete implementation:
@@ -741,7 +741,7 @@ def invert_monotone_volume(
     )
     tolerance = 1e-12 * max(1.0, height[-1])
 
-    for _ in range(20):
+    for _ in range(64):
         residual = (
             eval_ppoly(guess, height, volume_coefficients)
             - target_volume
