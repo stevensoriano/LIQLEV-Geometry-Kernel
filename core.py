@@ -18,6 +18,12 @@ Performance notes:
 import numpy as np
 import pandas as pd
 from numba import njit
+from liqlev.geometry.jit import (
+    eval_ppoly,
+    eval_ppoly_derivative,
+    integrate_boundary_layer,
+    invert_monotone_volume,
+)
 from thermo_utils import sli, Tsat, Psat, DensitySat, Cpsat, LHoV, dPdTsat
 
 
@@ -69,6 +75,14 @@ def _solver_loop(
     coeff_s1, exp_s1, coeff_sm, exp_sm, coeff_vbl, exp_vbl,
     dtank, pinit,
     grav_samples_t, grav_samples_g, use_grav_samples,
+    geometry_mode,
+    geom_height,
+    geom_volume,
+    geom_volume_coefficients,
+    geom_area_samples,
+    geom_perimeter,
+    geom_sidewall_area,
+    geom_sidewall_coefficients,
 ):
     """JIT-compiled inner solver loop.
 
@@ -141,7 +155,30 @@ def _solver_loop(
         delmv = vmdot * delta
 
         # Epsilon
-        if neps > 0:
+        if geometry_mode == 1:
+            interface_area = max(
+                0.0,
+                eval_ppoly_derivative(
+                    h1,
+                    geom_height,
+                    geom_volume_coefficients,
+                ),
+            )
+            wetted_side_area = max(
+                0.0,
+                eval_ppoly(
+                    h1,
+                    geom_height,
+                    geom_sidewall_coefficients,
+                ),
+            )
+            eps_denom = wetted_side_area + interface_area
+            eps = (
+                wetted_side_area / eps_denom
+                if eps_denom != 0.0
+                else 0.0
+            )
+        elif neps > 0:
             eps = _interp(thetav, teps, xeps)
         else:
             eps_denom = perim * h1 + ac
@@ -171,47 +208,138 @@ def _solver_loop(
         savak3 = 0.0
         svfvbl = 0.0
         solver_active = True
+        custom_failure = False
+        custom_exit_rate = 0.0
+        normalized_exit_flow = 0.0
+        delblz = 0.0
+        vbl2 = vbl1
+        positive_ak3 = 0.0
+        positive_fvbl = 0.0
+        negative_ak3 = 0.0
+        negative_fvbl = 0.0
+        have_positive = False
+        have_negative = False
 
         while solver_active and nconv < 80:
             zht2_s = zht1 + dhdt * delta
             if ak3 < 0:
                 ak3 = hldak3
 
-            # Initial guess
-            arg = 0.375 * dtank * ak3 * zht2_s
-            delblz = arg ** (2.0 / 3.0) if arg > 0 else 0.0
-
-            # Newton-Raphson inner loop (vectorized sums via dot products)
-            for _ in range(20):
-                # sum1 = coeff_s1 . delblz^exp_s1
-                s1 = 0.0
-                for k in range(10):
-                    s1 += coeff_s1[k] * (delblz ** exp_s1[k])
-                fdelt = 8.0 * s1 / ak3 - zht2_s if ak3 != 0 else 1e30
-                if abs(fdelt) <= 1e-5 * zht2_s:
+            if geometry_mode == 1:
+                (
+                    custom_delta,
+                    custom_vbl,
+                    normalized_exit_flow,
+                    integration_status,
+                ) = integrate_boundary_layer(
+                    ak3,
+                    zht2_s,
+                    geom_height,
+                    geom_volume_coefficients,
+                    geom_perimeter,
+                    4,
+                )
+                if integration_status != 0:
+                    custom_failure = True
                     break
-                sm = 0.0
-                for k in range(10):
-                    sm += coeff_sm[k] * (delblz ** exp_sm[k])
-                fpdelt = 4.0 * sm / ak3 if ak3 != 0 else 1e30
-                delblz -= fdelt / (fpdelt if fpdelt != 0 else 1e-9)
+                delblz = custom_delta
+                vbl2 = custom_vbl
+                custom_exit_rate = ak1 * normalized_exit_flow
+            else:
+                # Initial guess
+                arg = 0.375 * dtank * ak3 * zht2_s
+                delblz = arg ** (2.0 / 3.0) if arg > 0 else 0.0
 
-            # BL volume
-            svbl = 0.0
-            for k in range(10):
-                svbl += coeff_vbl[k] * (delblz ** exp_vbl[k])
-            vbl2 = svbl * np.pi / ak3 if ak3 != 0 else 0.0
+                # Newton-Raphson inner loop (vectorized sums via dot products)
+                for _ in range(20):
+                    # sum1 = coeff_s1 . delblz^exp_s1
+                    s1 = 0.0
+                    for k in range(10):
+                        s1 += coeff_s1[k] * (delblz ** exp_s1[k])
+                    fdelt = (
+                        8.0 * s1 / ak3 - zht2_s
+                        if ak3 != 0
+                        else 1e30
+                    )
+                    if abs(fdelt) <= 1e-5 * zht2_s:
+                        break
+                    sm = 0.0
+                    for k in range(10):
+                        sm += coeff_sm[k] * (delblz ** exp_sm[k])
+                    fpdelt = 4.0 * sm / ak3 if ak3 != 0 else 1e30
+                    delblz -= fdelt / (
+                        fpdelt if fpdelt != 0 else 1e-9
+                    )
+
+                # BL volume
+                svbl = 0.0
+                for k in range(10):
+                    svbl += coeff_vbl[k] * (delblz ** exp_vbl[k])
+                vbl2 = svbl * np.pi / ak3 if ak3 != 0 else 0.0
 
             # Error function
             if rhol != 0:
-                fvbl = (vbl2 - ak2 * xml1 * delta / rhol
-                        + 2.1 * ak1 * dtank * (delblz ** 1.5) * delta - vbl1)
+                if geometry_mode == 1:
+                    fvbl = (
+                        vbl2
+                        - ak2 * xml1 * delta / rhol
+                        + custom_exit_rate * delta
+                        - vbl1
+                    )
+                else:
+                    fvbl = (
+                        vbl2
+                        - ak2 * xml1 * delta / rhol
+                        + 2.1
+                        * ak1
+                        * dtank
+                        * (delblz ** 1.5)
+                        * delta
+                        - vbl1
+                    )
             else:
                 fvbl = 1e30
 
             # Convergence check
             if abs(fvbl) <= 0.001 * vbl2:
                 solver_active = False
+            elif geometry_mode == 1:
+                if fvbl > 0.0:
+                    positive_ak3 = ak3
+                    positive_fvbl = fvbl
+                    have_positive = True
+                else:
+                    negative_ak3 = ak3
+                    negative_fvbl = fvbl
+                    have_negative = True
+                nconv += 1
+                if have_positive and have_negative:
+                    fvbl_diff = positive_fvbl - negative_fvbl
+                    if fvbl_diff != 0.0:
+                        next_ak3 = positive_ak3 - (
+                            positive_fvbl
+                            * (positive_ak3 - negative_ak3)
+                            / fvbl_diff
+                        )
+                    else:
+                        next_ak3 = 0.5 * (
+                            positive_ak3 + negative_ak3
+                        )
+                    bracket_low = min(positive_ak3, negative_ak3)
+                    bracket_high = max(positive_ak3, negative_ak3)
+                    if (
+                        not np.isfinite(next_ak3)
+                        or next_ak3 <= bracket_low
+                        or next_ak3 >= bracket_high
+                    ):
+                        next_ak3 = 0.5 * (
+                            positive_ak3 + negative_ak3
+                        )
+                    ak3 = next_ak3
+                elif have_positive:
+                    ak3 = positive_ak3 * 0.5
+                else:
+                    ak3 = negative_ak3 * 2.0
             else:
                 if nconv <= 1:
                     if nconv == 0:
@@ -238,13 +366,37 @@ def _solver_loop(
                     nconv += 1
 
         # ── Post-solver kinematics ──
-        if rhol * ac * delta != 0:
-            dhdt = ((vbl2 - vbl1) + (xml2 - xml1) / rhol) / ac / delta
+        if geometry_mode == 1:
+            if custom_failure or solver_active:
+                dhdt = 0.0
+                zht2 = h1
+                h2 = h1
+            else:
+                occupied_volume = xml2 / rhol + vbl2
+                h2 = invert_monotone_volume(
+                    occupied_volume,
+                    geom_height,
+                    geom_volume,
+                    geom_volume_coefficients,
+                )
+                if not np.isfinite(h2):
+                    custom_failure = True
+                    dhdt = 0.0
+                    zht2 = h1
+                    h2 = h1
+                else:
+                    dhdt = (h2 - h1) / delta
+                    zht2 = h2
+        elif rhol * ac * delta != 0:
+            dhdt = (
+                (vbl2 - vbl1) + (xml2 - xml1) / rhol
+            ) / ac / delta
+            zht2 = zht1 + dhdt * delta
+            h2 = zht2
         else:
             dhdt = 0.0
-
-        zht2 = zht1 + dhdt * delta
-        h2 = zht2
+            zht2 = zht1
+            h2 = zht2
         delh = h2 - h1
         hratio = (h2 - htzero) / htzero if htzero != 0 else 0.0
 
@@ -263,7 +415,17 @@ def _solver_loop(
         beta = vbl2 * rhov / xmlzro / beta_denom if xmlzro * beta_denom != 0 else 0.0
 
         xmvbl2 = vbl2 * rhov
-        xmdtbl = 2.1 * ak1 * dtank * (delblz ** 1.5) * delta * rhov
+        if geometry_mode == 1:
+            xmdtbl = custom_exit_rate * delta * rhov
+        else:
+            xmdtbl = (
+                2.1
+                * ak1
+                * dtank
+                * (delblz ** 1.5)
+                * delta
+                * rhov
+            )
 
         # Vapor generation
         mass_gen_lbm = xmdtbl - (1.0 - eps) * delme
@@ -318,8 +480,15 @@ def _solver_loop(
         res[step, 25] = superheat_k
         res[step, 26] = vap_gen_rate
         res[step, 27] = cumulative_vap_kg
-        res[step, 28] = 0.0 if not solver_active else 1.0  # 0=converged, 1=failed
+        res[step, 28] = (
+            1.0
+            if solver_active or custom_failure
+            else 0.0
+        )
         step += 1
+
+        if geometry_mode == 1 and (solver_active or custom_failure):
+            break
 
         # Advance state
         p1 = p2
@@ -353,6 +522,96 @@ _COL_NAMES = [
 ]
 
 
+def _require_custom_geometry_array(inputs, input_name, ndim):
+    """Return one validated runtime array without copying or coercing it."""
+    value = inputs.get(input_name.lower())
+    if not isinstance(value, np.ndarray):
+        raise ValueError(f"{input_name} must be a numpy array")
+    if value.dtype != np.float64:
+        raise ValueError(f"{input_name} must use float64")
+    if value.ndim != ndim:
+        raise ValueError(f"{input_name} must be {ndim}D")
+    if not value.flags.c_contiguous:
+        raise ValueError(f"{input_name} must be C-contiguous")
+    if not np.all(np.isfinite(value)):
+        raise ValueError(f"{input_name} contains non-finite values")
+    return value
+
+
+def _custom_geometry_arrays(inputs):
+    """Validate the primitive-array boundary used by the Numba solver."""
+    height = _require_custom_geometry_array(inputs, "GeomHeight", 1)
+    volume = _require_custom_geometry_array(inputs, "GeomVolume", 1)
+    volume_coefficients = _require_custom_geometry_array(
+        inputs,
+        "GeomVolumeCoefficients",
+        2,
+    )
+    area_samples = _require_custom_geometry_array(
+        inputs,
+        "GeomAreaSamples",
+        1,
+    )
+    perimeter = _require_custom_geometry_array(
+        inputs,
+        "GeomPerimeter",
+        1,
+    )
+    sidewall_area = _require_custom_geometry_array(
+        inputs,
+        "GeomSidewallArea",
+        1,
+    )
+    sidewall_coefficients = _require_custom_geometry_array(
+        inputs,
+        "GeomSidewallCoefficients",
+        2,
+    )
+
+    count = len(height)
+    if count < 3 or np.any(np.diff(height) <= 0.0):
+        raise ValueError(
+            "GeomHeight must contain at least three strictly increasing nodes"
+        )
+    for name, array in (
+        ("GeomVolume", volume),
+        ("GeomAreaSamples", area_samples),
+        ("GeomPerimeter", perimeter),
+        ("GeomSidewallArea", sidewall_area),
+    ):
+        if len(array) != count:
+            raise ValueError(f"{name} length must match GeomHeight")
+    if volume_coefficients.shape != (4, count - 1):
+        raise ValueError(
+            "GeomVolumeCoefficients must have shape (4, N-1)"
+        )
+    if sidewall_coefficients.shape != (4, count - 1):
+        raise ValueError(
+            "GeomSidewallCoefficients must have shape (4, N-1)"
+        )
+    if np.any(np.diff(volume) < 0.0):
+        raise ValueError("GeomVolume must be non-decreasing")
+    if np.any(np.diff(sidewall_area) < 0.0):
+        raise ValueError("GeomSidewallArea must be non-decreasing")
+    if np.any(area_samples < 0.0):
+        raise ValueError("GeomAreaSamples must be non-negative")
+    if np.any(perimeter < 0.0):
+        raise ValueError("GeomPerimeter must be non-negative")
+    if abs(height[0]) > 1e-12 or abs(volume[0]) > 1e-12:
+        raise ValueError("GeomHeight and GeomVolume must begin at zero")
+    if height[-1] <= 0.0 or volume[-1] <= 0.0:
+        raise ValueError("custom geometry totals must be positive")
+    return (
+        height,
+        volume,
+        volume_coefficients,
+        area_samples,
+        perimeter,
+        sidewall_area,
+        sidewall_coefficients,
+    )
+
+
 def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
     """Main simulation logic converted from the LIQLEV VBA subroutine.
 
@@ -379,6 +638,9 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
     gravity_function = inputs.get('gravity_function', None)
     fluid = inputs['liquid']
     units = inputs['units']
+    geometry_mode = int(inputs.get('geometrymode', 0))
+    if geometry_mode not in (0, 1):
+        raise ValueError("GeometryMode must be 0 (legacy) or 1 (custom)")
 
     if units == "SI":
         dtank = inputs['dtank'] * 3.28
@@ -397,10 +659,54 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
         pfinal = inputs['pfinal']
         tinit = inputs['tinit']
 
+    dummy_geometry = np.array([0.0, 1.0], dtype=np.float64)
+    dummy_coefficients = np.zeros((4, 1), dtype=np.float64)
+    if geometry_mode == 1:
+        (
+            geom_height,
+            geom_volume,
+            geom_volume_coefficients,
+            geom_area_samples,
+            geom_perimeter,
+            geom_sidewall_area,
+            geom_sidewall_coefficients,
+        ) = _custom_geometry_arrays(inputs)
+        total_geom_volume = geom_volume[-1]
+        relative_volume_error = (
+            abs(volt - total_geom_volume) / abs(total_geom_volume)
+        )
+        if relative_volume_error > 1e-10:
+            raise ValueError(
+                "Volt must match GeomVolume[-1] within 1e-10 relative"
+            )
+        fill = float(inputs['fillfraction'])
+        if not np.isfinite(fill) or fill < 0.0 or fill > 1.0:
+            raise ValueError("FillFraction must be finite and within [0, 1]")
+        initial_occupied_volume = fill * volt
+        htzero = invert_monotone_volume(
+            initial_occupied_volume,
+            geom_height,
+            geom_volume,
+            geom_volume_coefficients,
+        )
+        if not np.isfinite(htzero):
+            raise ValueError(
+                "FillFraction could not be inverted through GeomVolume"
+            )
+    else:
+        geom_height = dummy_geometry
+        geom_volume = dummy_geometry
+        geom_volume_coefficients = dummy_coefficients
+        geom_area_samples = dummy_geometry
+        geom_perimeter = dummy_geometry
+        geom_sidewall_area = dummy_geometry
+        geom_sidewall_coefficients = dummy_coefficients
+
     perim = np.pi * dtank
     ac = 0.7854 * (dtank ** 2)
     htank = volt / ac
-    fill = htzero * ac / volt
+    if geometry_mode == 0:
+        fill = htzero * ac / volt
     print(f"Initial % fill volume: {fill * 100:.2f}%")
 
     # Pre-compute vectorized coefficients for boundary layer sums
@@ -486,6 +792,14 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
         coeff_s1, exp_s1, coeff_sm, exp_sm, coeff_vbl, exp_vbl,
         dtank, pinit,
         grav_t, grav_g, use_grav_samples,
+        geometry_mode,
+        geom_height,
+        geom_volume,
+        geom_volume_coefficients,
+        geom_area_samples,
+        geom_perimeter,
+        geom_sidewall_area,
+        geom_sidewall_coefficients,
     )
 
     elapsed = _time.perf_counter() - _wall_start
