@@ -144,10 +144,10 @@ def load_named_product(
             f"expected {expected_sha256.upper()}, got {actual_sha256}"
         )
 
-    document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
-    reader = STEPCAFControl_Reader()
-    reader.SetNameMode(True)
     try:
+        document = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+        reader = STEPCAFControl_Reader()
+        reader.SetNameMode(True)
         read_status = reader.ReadFile(str(source))
         if read_status != IFSelect_RetDone:
             raise StepProductError(

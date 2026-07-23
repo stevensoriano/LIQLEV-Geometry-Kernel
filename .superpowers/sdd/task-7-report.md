@@ -5,6 +5,8 @@
 Complete under the approved Task 7 boundary:
 
 - the source STEP is verified before OpenCascade constructs a reader;
+- document creation, reader construction, and name-mode setup are inside the
+  public `StepProductError` boundary;
 - the assembly is loaded through `STEPCAFControl_Reader` into an XCAF
   document;
 - free shapes and component labels are traversed recursively;
@@ -86,6 +88,65 @@ The final focused GREEN was:
 ```text
 python -m pytest tests/cad/test_xcaf_selection.py -q
 7 passed in 89.41s
+```
+
+## Review findings and corrections
+
+The Task 7 review identified two contained defects.
+
+First, `tests/cad/test_xcaf_selection.py` imported CadQuery and
+`liqlev.cad.xcaf` at module scope. In an environment without the optional CAD
+stack, collection failed before pytest could skip the CAD tests:
+
+```text
+ERROR tests/cad/test_xcaf_selection.py
+ModuleNotFoundError: blocked optional dependency: cadquery
+no tests collected, 1 error in 0.21s
+```
+
+The corrected test module imports only pytest and standard-library modules at
+collection time. Its module-scoped `cad_modules` fixture calls
+`pytest.importorskip` for `cadquery` and `OCP` before importing
+`liqlev.cad.xcaf`. CAD-dependent checks use that fixture. All tests that
+dereference the external `SOURCE`, including the provenance byte-count check,
+use one explicit source-availability skip marker. The dependency-free
+provenance metadata check therefore remains collectible when the CAD stack is
+absent and runs whenever its external source authority is present.
+
+A safe in-process portability probe blocked imports of both optional CAD
+packages and made only the approved external source path report absent; it did
+not move, rename, delete, or modify the real STEP:
+
+```text
+Focused portability probe:
+8 skipped in 0.02s
+
+Full-suite portability probe:
+90 passed, 8 skipped in 13.67s
+```
+
+Second, file hashing and hash comparison correctly preceded OpenCascade setup,
+but document creation, reader construction, and `SetNameMode(True)` were
+outside the public exception boundary. A regression test first established
+the defect after computing a valid hash:
+
+```text
+python -m pytest tests/cad/test_xcaf_selection.py -q \
+  -k reader_constructor_failure
+
+FAILED test_reader_constructor_failure_is_wrapped_after_valid_hash
+RuntimeError: reader construction failed
+1 failed, 7 deselected in 1.66s
+```
+
+The minimal production correction moved `TDocStd_Document`,
+`STEPCAFControl_Reader`, and `SetNameMode(True)` into the existing guarded
+block. Hashing and hash comparison remain before that block and therefore
+still complete before reader construction. The same focused regression then
+proved both the `StepProductError` conversion and exception chaining:
+
+```text
+1 passed, 7 deselected in 1.42s
 ```
 
 ## XCAF traversal and placement
@@ -210,6 +271,22 @@ python -m pytest -q
 97 passed in 120.62s
 ```
 
+Post-review corrective verification:
+
+```text
+python -m pytest tests/cad/test_xcaf_selection.py -q
+8 passed in 68.37s
+
+python -m pytest tests/cad/test_xcaf_selection.py tests/geometry -q
+60 passed in 83.05s
+
+python scripts/check_physics_baseline.py
+Physics baseline check passed.
+
+python -m pytest -q
+98 passed in 83.42s
+```
+
 Whitespace and final status checks are recorded in the controller handoff
 after this report is staged.
 
@@ -221,6 +298,9 @@ after this report is staged.
 - `tests/cad/test_xcaf_selection.py`
 - `geometry/source/PROVENANCE.json`
 - `.superpowers/sdd/task-7-report.md`
+
+The post-review corrective commit changes only `liqlev/cad/xcaf.py`,
+`tests/cad/test_xcaf_selection.py`, and this report.
 
 ## Commit
 
@@ -240,10 +320,23 @@ The commit cannot contain its own hash; the final hash is recorded in the
 controller handoff. No automated-assistant authorship, co-authorship, or
 attribution is included.
 
+The review corrections are committed separately as:
+
+```text
+fix: harden XCAF test and error boundaries
+```
+
+with the same sole author and committer.
+
 ## Self-review
 
 - Confirmed SHA-256 verification completes before the STEP reader is
   constructed or transfer is attempted.
+- Confirmed document and reader initialization failures cross the public
+  boundary as `StepProductError` while retaining the original exception as
+  `__cause__`.
+- Confirmed collection and the full suite skip cleanly when the external STEP
+  and optional CAD dependencies are unavailable.
 - Confirmed read, transfer, zero-match, multiple-match, and null/unusable-shape
   failures cross the public boundary as `StepProductError`.
 - Confirmed exact string equality is used for the resolved XCAF product name.
