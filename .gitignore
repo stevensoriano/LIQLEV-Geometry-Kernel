@@ -7,13 +7,11 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .ruff_cache/
+.numba_cache/
 
 # Results and Data
 results/
 *.xlsx
-*.csv
-# Keep the input data, but ignore output data.
-!data/5s_drop_tower_extracted_az_positive_data.csv
 
 # Virtual Environments
 venv/
@@ -30,6 +28,10 @@ build/
 dist/
 *.spec
 !packaging/liqlev_qt.spec
+
+# Geometry preprocessing scratch state
+geometry/work/
+geometry/tmp/
 
 # Claude Code
 .claude/

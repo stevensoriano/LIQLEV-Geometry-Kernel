@@ -96,6 +96,40 @@ $$\epsilon(t) = \frac{\pi D h(t)}{\pi D h(t) + \frac{\pi D^{2}}{4}}$$
 ### Thermodynamic Integration
 Outdated localized property lookups and curve fits have been replaced with the open-source `CoolProp` library[^3]. This provides consistent, high-accuracy real-fluid properties for Nitrogen, Hydrogen, Oxygen, and Methane across any pressure regime. The critical saturation-curve slope $(dP/dT)_{\rm sat}$ is computed dynamically via a central finite-difference scheme. For Hydrogen, legacy AS-203 polynomial correlations are retained for direct validation comparison.
 
+## Custom Tank Geometry
+
+LIQLEV now has an opt-in numeric geometry path for a phase-one class of
+watertight, single-connected tanks. OpenCascade remains outside the compiled
+solver: an offline command creates the capped fluid-domain STEP and exact
+geometry tables, while Numba receives only contiguous numeric arrays. Leaving
+`tank.geometry_path` empty keeps the legacy analytic cylinder branch
+unchanged.
+
+```json
+{
+  "tank": {
+    "diameter_ft": 1.0,
+    "height_ft": 1.806769625984252,
+    "fill_fractions": [0.5],
+    "geometry_path": "geometry/tables/nhq01-m21a-0201_LIQLEV_GEOMETRY.npz"
+  }
+}
+```
+
+In custom mode, `diameter_ft` and `height_ft` remain for configuration-schema
+compatibility and are not used by the solver. The loaded geometry package
+provides the actual height, volume, interface area, perimeter, and wetted
+sidewall area.
+
+Start with the [geometry-kernel operating guide](docs/geometry-kernel.md).
+The complete traceability set includes the
+[approved specification](docs/superpowers/specs/2026-07-23-liqlev-arbitrary-tank-geometry-design.md),
+[implementation plan](docs/superpowers/plans/2026-07-23-liqlev-geometry-kernel-implementation.md),
+[clean fluid STEP](geometry/output/nhq01-m21a-0201_LIQLEV_FLUID_DOMAIN.step),
+[table metadata](geometry/tables/nhq01-m21a-0201_LIQLEV_GEOMETRY.json),
+[CAD audit](geometry/audit/nhq01-m21a-0201_LIQLEV_AUDIT.json), and
+[solver result manifest](validation/results/nasa_tank_geometry_manifest.json).
+
 ## Project Structure
 
 ```text
