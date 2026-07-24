@@ -371,6 +371,106 @@ def test_builds_validated_cylinder_geometry_kernel() -> None:
     )
 
 
+def test_accepts_exact_endpoint_face_mosaics() -> None:
+    width_mm = 8.0
+    depth_mm = 6.0
+    total_height_mm = 10.0
+    left = cq.Solid.makeBox(
+        width_mm / 2.0,
+        total_height_mm,
+        depth_mm,
+        cq.Vector(-width_mm / 2.0, 0.0, -depth_mm / 2.0),
+    )
+    right = cq.Solid.makeBox(
+        width_mm / 2.0,
+        total_height_mm,
+        depth_mm,
+        cq.Vector(0.0, 0.0, -depth_mm / 2.0),
+    )
+    fluid = left.fuse(right, glue=False).Solids()[0]
+    closure_counts: list[int] = []
+    for y_mm, normal_y in ((0.0, -1.0), (total_height_mm, 1.0)):
+        closure_counts.append(
+            sum(
+                face.geomType() == "PLANE"
+                and abs(face.Center().y - y_mm) <= 1e-9
+                and face.normalAt(face.Center()).y * normal_y > 1.0 - 1e-9
+                for face in fluid.Faces()
+            )
+        )
+    assert fluid.isValid()
+    assert closure_counts == [2, 2]
+
+    height_mm = np.linspace(0.0, total_height_mm, 33)
+    samples = measure_geometry(
+        fluid,
+        height_mm,
+        y_min_mm=0.0,
+        y_max_mm=total_height_mm,
+    )
+    section_area_mm2 = np.full_like(
+        height_mm,
+        width_mm * depth_mm,
+    )
+    volume_mm3 = section_area_mm2 * height_mm
+    perimeter_mm = np.full_like(
+        height_mm,
+        2.0 * (width_mm + depth_mm),
+    )
+    sidewall_area_mm2 = perimeter_mm * height_mm
+    total_wetted_area_mm2 = section_area_mm2 + sidewall_area_mm2
+    total_wetted_area_mm2[-1] += section_area_mm2[-1]
+    np.testing.assert_allclose(samples.volume_mm3, volume_mm3, rtol=1e-8)
+    np.testing.assert_allclose(
+        samples.section_area_mm2,
+        section_area_mm2,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        samples.perimeter_mm,
+        perimeter_mm,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        samples.sidewall_area_mm2,
+        sidewall_area_mm2,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        samples.total_wetted_area_mm2,
+        total_wetted_area_mm2,
+        rtol=1e-8,
+    )
+
+    kernel = build_geometry_kernel(
+        fluid,
+        metadata=metadata(0.0, total_height_mm),
+        max_nodes=33,
+    )
+    validate_geometry_kernel(kernel)
+    assert len(kernel.height_ft) == 33
+    np.testing.assert_allclose(
+        kernel.volume_ft3,
+        volume_mm3 * MM3_TO_FT3,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        kernel.section_area_ft2,
+        section_area_mm2 * MM2_TO_FT2,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        kernel.perimeter_ft,
+        perimeter_mm * MM_TO_FT,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        kernel.sidewall_area_ft2,
+        sidewall_area_mm2 * MM2_TO_FT2,
+        rtol=1e-8,
+    )
+
+
 @pytest.mark.parametrize("max_nodes", [True, 32, 1026, 33.0])
 def test_rejects_invalid_adaptive_node_limits(max_nodes: object) -> None:
     fluid = cq.Solid.makeCylinder(

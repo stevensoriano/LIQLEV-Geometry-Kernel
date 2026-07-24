@@ -79,6 +79,102 @@ def _section_face(
     return face
 
 
+def _endpoint_section_metrics(
+    shape: cq.Shape,
+    y_mm: float,
+    normal_y: float,
+    tolerance_mm: float,
+) -> tuple[float, float]:
+    faces = _plane_faces_at_y(
+        shape,
+        y_mm,
+        normal_y,
+        tolerance_mm,
+    )
+    if not faces:
+        return 0.0, 0.0
+    if len(faces) == 1:
+        face = faces[0]
+        if len(face.Wires()) != 1:
+            raise GeometryMeasurementError(
+                f"endpoint section at Y={y_mm:.12g} mm contains an inner wire"
+            )
+        return face.Area(), face.outerWire().Length()
+
+    edge_groups: list[list[tuple[int, cq.Edge]]] = []
+    for face_index, face in enumerate(faces):
+        for wire in face.Wires():
+            for edge in wire.Edges():
+                for group in edge_groups:
+                    if edge.isSame(group[0][1]):
+                        group.append((face_index, edge))
+                        break
+                else:
+                    edge_groups.append([(face_index, edge)])
+
+    boundary_edges: list[cq.Edge] = []
+    for group in edge_groups:
+        if len(group) == 1:
+            boundary_edges.append(group[0][1])
+            continue
+        if len(group) != 2 or group[0][0] == group[1][0]:
+            raise GeometryMeasurementError(
+                f"endpoint section at Y={y_mm:.12g} mm has ambiguous "
+                "shared-edge topology"
+            )
+    if not boundary_edges:
+        raise GeometryMeasurementError(
+            f"endpoint section at Y={y_mm:.12g} mm has no exterior boundary"
+        )
+    unassigned = list(boundary_edges)
+    edge_components: list[list[cq.Edge]] = []
+    while unassigned:
+        component = [unassigned.pop()]
+        component_vertices = component[0].Vertices()
+        connected = True
+        while connected:
+            connected = False
+            for index in range(len(unassigned) - 1, -1, -1):
+                candidate = unassigned[index]
+                candidate_vertices = candidate.Vertices()
+                if not any(
+                    candidate_vertex.isSame(component_vertex)
+                    for candidate_vertex in candidate_vertices
+                    for component_vertex in component_vertices
+                ):
+                    continue
+                component.append(unassigned.pop(index))
+                for candidate_vertex in candidate_vertices:
+                    if not any(
+                        candidate_vertex.isSame(component_vertex)
+                        for component_vertex in component_vertices
+                    ):
+                        component_vertices.append(candidate_vertex)
+                connected = True
+        edge_components.append(component)
+
+    boundaries: list[cq.Wire] = []
+    for component in edge_components:
+        try:
+            boundaries.append(cq.Wire.assembleEdges(component))
+        except Exception as exc:
+            raise GeometryMeasurementError(
+                f"endpoint section at Y={y_mm:.12g} mm boundary edges "
+                "could not be connected exactly"
+            ) from exc
+    if len(boundaries) != 1 or not boundaries[0].IsClosed():
+        boundary_states = tuple(wire.IsClosed() for wire in boundaries)
+        raise GeometryMeasurementError(
+            f"endpoint section at Y={y_mm:.12g} mm requires one closed "
+            f"outer boundary with no inner or open boundary; observed "
+            f"{len(boundaries)} boundaries, closed={boundary_states}"
+        )
+    return (
+        float(sum(face.Area() for face in faces)),
+        boundaries[0].Length(),
+    )
+
+
 def _require_single_solid(shape: cq.Shape, y_mm: float) -> cq.Solid:
     solids = shape.Solids()
     if len(solids) != 1:
@@ -169,20 +265,18 @@ def measure_geometry(
             "fluid Y bounds do not match y_min_mm and y_max_mm"
         )
 
-    minimum_face = _section_face(
+    minimum_cap_area, minimum_perimeter = _endpoint_section_metrics(
         fluid,
         y_min_mm,
         -1.0,
         tolerance_mm,
     )
-    maximum_face = _section_face(
+    maximum_cap_area, maximum_perimeter = _endpoint_section_metrics(
         fluid,
         y_max_mm,
         1.0,
         tolerance_mm,
     )
-    minimum_cap_area = 0.0 if minimum_face is None else minimum_face.Area()
-    maximum_cap_area = 0.0 if maximum_face is None else maximum_face.Area()
 
     volume: list[float] = []
     section_area: list[float] = []
@@ -194,18 +288,14 @@ def measure_geometry(
         if index == 0:
             volume.append(0.0)
             section_area.append(minimum_cap_area)
-            perimeter.append(
-                0.0 if minimum_face is None else minimum_face.outerWire().Length()
-            )
+            perimeter.append(minimum_perimeter)
             sidewall_area.append(0.0)
             total_wetted_area.append(minimum_cap_area)
             continue
         if index == len(nodes) - 1:
             volume.append(fluid.Volume())
             section_area.append(maximum_cap_area)
-            perimeter.append(
-                0.0 if maximum_face is None else maximum_face.outerWire().Length()
-            )
+            perimeter.append(maximum_perimeter)
             total_area = fluid.Area()
             total_wetted_area.append(total_area)
             sidewall_area.append(

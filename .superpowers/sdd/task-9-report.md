@@ -316,3 +316,110 @@ analytic/geometry gate increased from `20.95s` to `57.33s`. The approximately
 37-second increase is the deterministic offline cost of exact B-Rep clipping
 through 513 nodes for the deliberately dense worst-case regression. Runtime
 solver code and legacy physics remain untouched.
+
+## Integration correction: exact endpoint closure mosaics
+
+Task 10 integration exposed that the approved Task 8 fluid solid retains its
+exact planar closure mosaics: 27 faces at minimum `Y` and 3 faces at maximum
+`Y`. Task 9 incorrectly routed endpoint sections through the interior
+single-cut-face rule and rejected the valid solid before any interior
+measurement.
+
+A deterministic analytic regression was created from two exactly fused
+adjacent `4 × 10 × 6 mm` prisms with refinement disabled. The result is one
+valid `8 × 10 × 6 mm` solid whose minimum and maximum closure planes each
+retain two coplanar faces. Interior clipping still produces the expected
+single rectangular cut face.
+
+The regression was written first and produced the expected RED:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_accepts_exact_endpoint_face_mosaics -q
+
+GeometryMeasurementError:
+section at Y=0 mm has 2 outer faces; exactly one is supported
+
+1 failed in 1.99s
+```
+
+Endpoint metrics now preserve the exact B-Rep and:
+
+1. collect every planar assembly-`Y`-normal face at the closure ordinate;
+2. sum the exact face areas;
+3. group all face-wire edges with OpenCascade `isSame` topological identity;
+4. remove edges that occur exactly twice on different mosaic faces;
+5. reject non-manifold or otherwise ambiguous shared-edge multiplicity;
+6. partition the remaining edges by exact shared-vertex identity;
+7. assemble each component into an exact wire; and
+8. require exactly one closed boundary, thereby rejecting inner, open, or
+   ambiguous boundaries.
+
+The single-face endpoint path remains unchanged. No face unification, shape
+healing, surface fitting, replacement solid, or approximate geometry is
+performed. Both summed closure areas are subtracted from full-solid surface
+area when computing total sidewall area.
+
+Analytic GREEN:
+
+```text
+minimum/maximum mosaic faces:  2 / 2
+section area:                  48 mm^2
+full volume:                   480 mm^3
+section perimeter:             28 mm
+full sidewall area:            280 mm^2
+kernel nodes:                  33
+
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_accepts_exact_endpoint_face_mosaics -q
+
+1 passed in 3.25s
+```
+
+A read-only focused probe then independently imported the current exact STEP
+and measured minimum, midpoint, and maximum nodes:
+
+```text
+solid / valid / faces:         1 / true / 40
+minimum/maximum mosaic faces:  27 / 3
+nodes measured:                3
+elapsed:                       0.443089 s
+
+minimum cap:
+  area:                        33883.637475439 mm^2
+  perimeter:                   652.529038755 mm
+
+midpoint:
+  volume:                      49210880.430889934 mm^3
+  section area:                245720.639963535 mm^2
+  perimeter:                   1757.218435306 mm
+
+maximum cap:
+  area:                        33980.358091778 mm^2
+  perimeter:                   653.459694976 mm
+
+full volume:                   98109377.711638018 mm^3
+full sidewall area:            963804.466720872 mm^2
+```
+
+The nonzero midpoint volume, area, and perimeter prove measurement progressed
+through endpoint setup and completed an exact interior clip.
+
+Final gates:
+
+```text
+python -m pytest tests/cad/test_analytic_measurements.py -q
+
+12 passed in 47.21s
+
+python -m pytest tests/cad/test_analytic_measurements.py tests/geometry -q
+
+64 passed in 59.17s
+```
+
+Relative to the preceding Task 9 correction, focused runtime changed from
+`44.81s` to `47.21s` and combined runtime changed from `57.33s` to `59.17s`.
+The Task 10 scripts, Task 10 artifact test, and all generated artifacts remain
+unmodified and uncommitted by this correction.
