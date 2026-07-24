@@ -110,14 +110,17 @@ def round_trip(cad_modules, fluid, tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def final_round_trip(cad_modules, fluid):
+def final_round_trip(cad_modules, fluid, tmp_path_factory):
     _, audit_module, _, _ = cad_modules
+    output_dir = tmp_path_factory.mktemp("final-inspection-round-trip")
+    output_path = output_dir / FINAL_STEP.name
+    audit_path = output_dir / FINAL_AUDIT.name
     imported, audit = audit_module.write_step_round_trip(
         fluid,
-        FINAL_STEP,
-        FINAL_AUDIT,
+        output_path,
+        audit_path,
     )
-    return imported, audit
+    return imported, audit, output_path, audit_path
 
 
 def _bounds(shape) -> tuple[float, float, float, float, float, float]:
@@ -292,12 +295,12 @@ def test_final_inspection_step_is_independently_reimported(
     final_round_trip,
 ) -> None:
     cq, _, _, _ = cad_modules
-    imported, audit = final_round_trip
-    independent = cq.importers.importStep(str(FINAL_STEP))
+    imported, audit, output_path, audit_path = final_round_trip
+    independent = cq.importers.importStep(str(output_path))
     independent_solids = independent.solids().vals()
 
-    assert FINAL_STEP.is_file()
-    assert FINAL_AUDIT.is_file()
+    assert output_path.is_file()
+    assert audit_path.is_file()
     assert len(independent_solids) == 1
     inspected = independent_solids[0]
     assert inspected.isValid()

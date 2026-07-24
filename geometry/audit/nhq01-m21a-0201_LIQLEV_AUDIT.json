@@ -1,0 +1,221 @@
+{
+  "artifact_sha256": {
+    "fluid_step": "648C9ACEEEF9CD0283617608E7AECA62F92A814A5F67E130A152A330C30BA5AE",
+    "geometry_csv": "0DB1865758795BD2C4B00A540402541306DA4296D3544E92429AA43EE5E4C5A2",
+    "geometry_json": "C4AC34354118A8A207846EF92B37DAF1B0B890A4D2453FFEEE195D7FBE8E448B",
+    "geometry_npz": "859EE059A5B0E3A095A6F62697EA3B2F936B6CA057532C5734C81D39D5085C9E",
+    "sections/orthogonal_xy.png": "1E086CAE3CC368A5441408CA3BB1BB3A890B5AEAAE46648AACD2938E92102EBE",
+    "sections/orthogonal_xz.png": "2498A52F08BE87A82B17A4ED011BC1DE4211E63768D126DC0B9E04E28F7C53EB",
+    "sections/orthogonal_yz.png": "4640E4B8C644D86126928B15DABA0685D4E9D6CF752755A352D23FFF667F1768",
+    "sections/section_xz_h000.png": "4FF9F70F6425C5C759642726A7F25E7B52181C61F7907E0A19D69D4865F48472",
+    "sections/section_xz_h010.png": "0F927443AEEF2B7470627B829530C5981BC934FF98B5C9AD25E4238589EC7ADE",
+    "sections/section_xz_h025.png": "7FDD5B03B6C00171F8AD1FFCA30826D1560824DC3A700CE573F342320719E30F",
+    "sections/section_xz_h050.png": "C0ED51F4942EAB75330B46B5CA217FDDA039EC93BD6AE116215C7C2CC297F8A4",
+    "sections/section_xz_h075.png": "1AE41693D956EA83CD160D288D7985C0CF313E6B5D3AFB2C29B1A44D97224E6D",
+    "sections/section_xz_h090.png": "E59EDED3B9E0A1849E497912127982F8076F792FECFA6DBF27761D995626D930",
+    "sections/section_xz_h100.png": "D773F69FADFEFE822F81FDF10EE7A85F25B46E1198D5FE03573A1B7B3F4AEB6B"
+  },
+  "axis": "+Y",
+  "bounding_box_mm": [
+    -279.67000017112,
+    279.67000017112,
+    -275.4067913371,
+    275.29679133713,
+    297.81275947409995,
+    857.15275961635
+  ],
+  "build_command": {
+    "argv": [
+      "C:\\Users\\sasorian\\Miniconda3\\python.exe",
+      "scripts/build_nasa_tank_geometry.py",
+      "--visual-section-review",
+      "passed"
+    ],
+    "executable": "C:\\Users\\sasorian\\Miniconda3\\python.exe",
+    "working_directory": "C:\\Users\\sasorian\\Documents\\Eta_Space\\LIQLEV-Geometry-Kernel\\.worktrees\\geometry-kernel-implementation"
+  },
+  "cap_plane_max_error_mm": 2.371334062445385e-07,
+  "closed_outer_shell": true,
+  "closure_planes_mm": [
+    -275.406791,
+    275.296791
+  ],
+  "commands": [
+    "C:\\Users\\sasorian\\Miniconda3\\python.exe scripts/build_nasa_tank_geometry.py --visual-section-review passed",
+    "python scripts/check_nasa_tank_geometry.py",
+    "python -m pytest tests/cad/test_nasa_tank_artifacts.py -q"
+  ],
+  "direct_area_relative_tolerance": 0.002,
+  "endpoint_mosaic_face_counts": [
+    27,
+    3
+  ],
+  "face_count": 40,
+  "gravity_direction": "-Y",
+  "independent_measurement": {
+    "cad_endpoint_volume_relative": 0.0,
+    "eligible_direct_area_midpoints": 91,
+    "integrated_dv_dh_relative": 1.1060654038698507e-07,
+    "max_direct_area_relative": 0.0017377546808950138,
+    "max_midpoint_sidewall_relative": 4.477561865173168e-05,
+    "max_midpoint_volume_relative": 3.1644223732608534e-05
+  },
+  "max_nodes": 1025,
+  "node_count": 92,
+  "passed": true,
+  "product_name": "nhq01-m21a- 0202_short",
+  "refinement_relative_tolerance": 0.0005,
+  "round_trip_absolute_volume_error_mm3": 0.03622707724571228,
+  "round_trip_audit": {
+    "absolute_volume_difference_mm3": 0.03622707724571228,
+    "bounding_box_differences_mm": [
+      9.999450867326232e-08,
+      9.999450867326232e-08,
+      3.342393029015511e-11,
+      3.410605131648481e-12,
+      3.410605131648481e-13,
+      7.958078640513122e-13
+    ],
+    "cap_plane_error_mm": 2.371334062445385e-07,
+    "closure_planes_mm": [
+      -275.406791,
+      275.296791
+    ],
+    "input_sha256": "0D1A0B60BDC2056DCF7714E1CBE0C79A4A049B96DAB29AC44CDD12C440AB637F",
+    "output_sha256": "648C9ACEEEF9CD0283617608E7AECA62F92A814A5F67E130A152A330C30BA5AE",
+    "passed": true,
+    "post_bounding_box_mm": [
+      -279.67000017112,
+      279.67000017112,
+      -275.4067913371,
+      275.29679133713,
+      297.81275947409995,
+      857.15275961635
+    ],
+    "post_closed_outer_shell": true,
+    "post_face_count": 40,
+    "post_shell_count": 1,
+    "post_solid_count": 1,
+    "post_surface_area_mm2": 1031668.4622880891,
+    "post_valid": true,
+    "post_volume_mm3": 98109377.71163802,
+    "pre_bounding_box_mm": [
+      -279.6700000711255,
+      279.6700000711255,
+      -275.4067913371334,
+      275.2967913371334,
+      297.8127594740996,
+      857.1527596163507
+    ],
+    "pre_closed_outer_shell": true,
+    "pre_face_count": 40,
+    "pre_shell_count": 1,
+    "pre_solid_count": 1,
+    "pre_surface_area_mm2": 1031668.462706133,
+    "pre_valid": true,
+    "pre_volume_mm3": 98109377.7478651,
+    "relative_volume_difference": 3.6925193164320727e-10,
+    "schema": "liqlev.cad.audit",
+    "source_sha256": "0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5",
+    "source_size_bytes": 36844537,
+    "step_schema": "AP214IS",
+    "surface_area_difference_mm2": 0.0004180439282208681,
+    "version": 2
+  },
+  "round_trip_relative_volume_error": 3.6925193164320727e-10,
+  "schema": "liqlev.geometry.nasa_tank_audit",
+  "section_images": [
+    "sections/orthogonal_xy.png",
+    "sections/orthogonal_yz.png",
+    "sections/orthogonal_xz.png",
+    "sections/section_xz_h000.png",
+    "sections/section_xz_h010.png",
+    "sections/section_xz_h025.png",
+    "sections/section_xz_h050.png",
+    "sections/section_xz_h075.png",
+    "sections/section_xz_h090.png",
+    "sections/section_xz_h100.png"
+  ],
+  "section_render_modes": {
+    "sections/orthogonal_xy.png": "orthogonal_projection",
+    "sections/orthogonal_xz.png": "orthogonal_projection",
+    "sections/orthogonal_yz.png": "orthogonal_projection",
+    "sections/section_xz_h000.png": "endpoint_closure_mosaic",
+    "sections/section_xz_h010.png": "interior_section",
+    "sections/section_xz_h025.png": "interior_section",
+    "sections/section_xz_h050.png": "interior_section",
+    "sections/section_xz_h075.png": "interior_section",
+    "sections/section_xz_h090.png": "interior_section",
+    "sections/section_xz_h100.png": "endpoint_closure_mosaic"
+  },
+  "shell_count": 1,
+  "solid_count": 1,
+  "source_path": "C:\\Users\\sasorian\\Documents\\Eta_Space\\geometry\\nhq01-m21a- 0201_TankAssy_NASA.STEP",
+  "source_preservation": {
+    "after_mtime_ns": 1784662504150033200,
+    "after_sha256": "0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5",
+    "after_size_bytes": 36844537,
+    "before_mtime_ns": 1784662504150033200,
+    "before_sha256": "0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5",
+    "before_size_bytes": 36844537,
+    "unchanged": true
+  },
+  "source_sha256": "0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5",
+  "source_size_bytes": 36844537,
+  "surface_area_mm2": 1031668.4622880891,
+  "technical_validation_passed": true,
+  "timings_seconds": {
+    "adaptive_measurement_and_coefficients": 41.795401,
+    "fluid_construction": 2.504082,
+    "independent_cad_table_measurement": 20.328567,
+    "normalized_step_reimport": 0.044066,
+    "package_save": 0.005094,
+    "product_selection": 32.485855,
+    "section_rendering": 2.832745,
+    "staged_validation": 0.283906,
+    "step_round_trip": 0.455953,
+    "step_timestamp_normalization": 0.001144,
+    "total_before_promotion": 101.081469
+  },
+  "tool_versions": {
+    "cadquery": "2.7.0",
+    "matplotlib": "3.10.7",
+    "numpy": "2.3.4",
+    "ocp": "7.8.1.1",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "python": "3.13.5"
+  },
+  "total_height_ft": 1.806770282152231,
+  "total_volume_ft3": 3.4646999761391375,
+  "valid": true,
+  "version": 1,
+  "visual_review_evidence": {
+    "acceptance": "No baffles, internal bodies, open ports, or outer-wall regions are present in the fluid solid.",
+    "review_scope": [
+      "sections/orthogonal_xy.png",
+      "sections/orthogonal_yz.png",
+      "sections/orthogonal_xz.png",
+      "sections/section_xz_h000.png",
+      "sections/section_xz_h010.png",
+      "sections/section_xz_h025.png",
+      "sections/section_xz_h050.png",
+      "sections/section_xz_h075.png",
+      "sections/section_xz_h090.png",
+      "sections/section_xz_h100.png"
+    ],
+    "reviewed_image_sha256": {
+      "sections/orthogonal_xy.png": "1E086CAE3CC368A5441408CA3BB1BB3A890B5AEAAE46648AACD2938E92102EBE",
+      "sections/orthogonal_xz.png": "2498A52F08BE87A82B17A4ED011BC1DE4211E63768D126DC0B9E04E28F7C53EB",
+      "sections/orthogonal_yz.png": "4640E4B8C644D86126928B15DABA0685D4E9D6CF752755A352D23FFF667F1768",
+      "sections/section_xz_h000.png": "4FF9F70F6425C5C759642726A7F25E7B52181C61F7907E0A19D69D4865F48472",
+      "sections/section_xz_h010.png": "0F927443AEEF2B7470627B829530C5981BC934FF98B5C9AD25E4238589EC7ADE",
+      "sections/section_xz_h025.png": "7FDD5B03B6C00171F8AD1FFCA30826D1560824DC3A700CE573F342320719E30F",
+      "sections/section_xz_h050.png": "C0ED51F4942EAB75330B46B5CA217FDDA039EC93BD6AE116215C7C2CC297F8A4",
+      "sections/section_xz_h075.png": "1AE41693D956EA83CD160D288D7985C0CF313E6B5D3AFB2C29B1A44D97224E6D",
+      "sections/section_xz_h090.png": "E59EDED3B9E0A1849E497912127982F8076F792FECFA6DBF27761D995626D930",
+      "sections/section_xz_h100.png": "D773F69FADFEFE822F81FDF10EE7A85F25B46E1198D5FE03573A1B7B3F4AEB6B"
+    }
+  },
+  "visual_section_review": "passed",
+  "volume_mm3": 98109377.71163802
+}

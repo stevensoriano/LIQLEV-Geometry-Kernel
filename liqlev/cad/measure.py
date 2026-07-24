@@ -466,6 +466,60 @@ def _select_samples(
     )
 
 
+def _measure_geometry_cached(
+    fluid: cq.Solid,
+    absolute_y_mm: np.ndarray,
+    *,
+    y_min_mm: float,
+    y_max_mm: float,
+    cache: dict[float, tuple[float, ...]],
+) -> GeometrySamplesMM:
+    nodes = np.asarray(absolute_y_mm, dtype=np.float64)
+    names = (
+        "height_mm",
+        "volume_mm3",
+        "section_area_mm2",
+        "perimeter_mm",
+        "sidewall_area_mm2",
+        "total_wetted_area_mm2",
+    )
+    missing_interior = [
+        float(y_mm)
+        for y_mm in nodes[1:-1]
+        if float(y_mm) not in cache
+    ]
+    if (
+        float(nodes[0]) not in cache
+        or float(nodes[-1]) not in cache
+        or missing_interior
+    ):
+        requested = _as_float64(
+            [y_min_mm, *missing_interior, y_max_mm]
+        )
+        measured = measure_geometry(
+            fluid,
+            requested,
+            y_min_mm=y_min_mm,
+            y_max_mm=y_max_mm,
+        )
+        for index, y_mm in enumerate(requested):
+            cache[float(y_mm)] = tuple(
+                float(getattr(measured, name)[index])
+                for name in names
+            )
+    return GeometrySamplesMM(
+        **{
+            name: _as_float64(
+                [
+                    cache[float(y_mm)][name_index]
+                    for y_mm in nodes
+                ]
+            )
+            for name_index, name in enumerate(names)
+        }
+    )
+
+
 def _midpoint_area_masks(
     midpoint_height: np.ndarray,
     direct_area: np.ndarray,
@@ -541,6 +595,13 @@ def _degenerate_endpoint_y_mm(
     )
 
 
+def _one_ring_refinement_mask(area_failing: np.ndarray) -> np.ndarray:
+    selected = np.asarray(area_failing, dtype=bool).copy()
+    selected[:-1] |= area_failing[1:]
+    selected[1:] |= area_failing[:-1]
+    return selected
+
+
 def _adaptive_measurements(
     fluid: cq.Solid,
     *,
@@ -561,16 +622,20 @@ def _adaptive_measurements(
             f"exceeding max_nodes={max_nodes}"
         )
 
+    measurement_cache: dict[float, tuple[float, ...]] = {}
+    refinement_iteration = 0
     while True:
+        refinement_iteration += 1
         midpoints = 0.5 * (nodes[:-1] + nodes[1:])
         combined = np.empty(len(nodes) + len(midpoints), dtype=np.float64)
         combined[0::2] = nodes
         combined[1::2] = midpoints
-        combined_samples = measure_geometry(
+        combined_samples = _measure_geometry_cached(
             fluid,
             combined,
             y_min_mm=y_min_mm,
             y_max_mm=y_max_mm,
+            cache=measurement_cache,
         )
         node_indices = np.arange(0, len(combined), 2)
         midpoint_indices = np.arange(1, len(combined), 2)
@@ -613,19 +678,21 @@ def _adaptive_measurements(
             raise GeometryMeasurementError(
                 "fluid volume and total sidewall area must be positive"
             )
-        failing = (
+        volume_failing = (
             np.abs(
                 combined_samples.volume_mm3[midpoint_indices]
                 - predicted_volume
             )
             > _REFINEMENT_RELATIVE_TOLERANCE * volume_scale
-        ) | (
+        )
+        sidewall_failing = (
             np.abs(
                 combined_samples.sidewall_area_mm2[midpoint_indices]
                 - predicted_sidewall
             )
             > _REFINEMENT_RELATIVE_TOLERANCE * sidewall_scale
         )
+        failing = volume_failing | sidewall_failing
         degenerate_endpoint_y = _degenerate_endpoint_y_mm(
             nodes,
             node_samples.section_area_mm2,
@@ -651,21 +718,41 @@ def _adaptive_measurements(
                 "direct area validation has no eligible interval midpoints"
             )
         failing |= area_failing
+        direct_area_neighborhood = np.zeros(
+            len(midpoints),
+            dtype=bool,
+        )
         if np.any(area_failing):
-            topology_refinement_neighborhood = np.asarray(
-                [
-                    np.min(np.abs(topology_y - midpoint))
-                    <= endpoint_clearance_mm
-                    for midpoint in midpoints
-                ]
+            direct_area_neighborhood = _one_ring_refinement_mask(
+                area_failing
             )
-            failing |= topology_refinement_neighborhood
+            failing |= direct_area_neighborhood
         if not np.any(failing):
             return node_samples, topology_y, midpoint_samples
-        if len(nodes) + int(np.count_nonzero(failing)) > max_nodes:
+        proposed_nodes = len(nodes) + int(np.count_nonzero(failing))
+        if proposed_nodes > max_nodes:
+            direct_area_neighbor_additions = (
+                direct_area_neighborhood
+                & ~volume_failing
+                & ~sidewall_failing
+                & ~area_failing
+            )
             raise GeometryMeasurementError(
                 f"adaptive measurement did not converge within "
-                f"max_nodes={max_nodes}"
+                f"max_nodes={max_nodes}: current_nodes={len(nodes)}, "
+                f"proposed_nodes={proposed_nodes}, "
+                f"volume_failures={int(np.count_nonzero(volume_failing))}, "
+                f"sidewall_failures="
+                f"{int(np.count_nonzero(sidewall_failing))}, "
+                f"direct_area_failures="
+                f"{int(np.count_nonzero(area_failing))}, "
+                f"direct_area_neighbor_additions="
+                f"{int(np.count_nonzero(direct_area_neighbor_additions))}, "
+                f"direct_area_failure_y_mm="
+                f"{midpoints[area_failing].tolist()}, "
+                f"direct_area_neighbor_y_mm="
+                f"{midpoints[direct_area_neighbor_additions].tolist()}, "
+                f"iteration={refinement_iteration}"
             )
         nodes = np.sort(np.concatenate((nodes, midpoints[failing])))
 

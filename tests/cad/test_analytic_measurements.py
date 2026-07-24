@@ -546,6 +546,140 @@ def test_rejects_invalid_adaptive_node_limits(max_nodes: object) -> None:
         )
 
 
+def test_max_node_failure_reports_each_refinement_driver() -> None:
+    radius = 31.0
+    y_min_mm = -11.0
+    y_max_mm = y_min_mm + 2.0 * radius
+    fluid = cq.Solid.makeSphere(
+        radius,
+        cq.Vector(0.0, y_min_mm + radius, 0.0),
+        cq.Vector(0.0, 1.0, 0.0),
+        -90.0,
+        90.0,
+        360.0,
+    )
+
+    with pytest.raises(
+        GeometryMeasurementError,
+        match=(
+            r"current_nodes=33, proposed_nodes=\d+, "
+            r"volume_failures=\d+, sidewall_failures=\d+, "
+            r"direct_area_failures=\d+, "
+            r"direct_area_neighbor_additions=\d+"
+        ),
+    ):
+        build_geometry_kernel(
+            fluid,
+            metadata=metadata(y_min_mm, y_max_mm),
+            max_nodes=33,
+        )
+
+
+@pytest.mark.parametrize(
+    ("area_failing", "expected"),
+    [
+        ([True, False, False], [True, True, False]),
+        ([False, False, True], [False, True, True]),
+        (
+            [False, False, True, False, False, True, False, False],
+            [False, True, True, True, True, True, True, False],
+        ),
+        (
+            [False, True, False, True, False],
+            [True, True, True, True, True],
+        ),
+    ],
+)
+def test_direct_area_refinement_uses_one_ring_interval_dilation(
+    area_failing: list[bool],
+    expected: list[bool],
+) -> None:
+    area_failing_array = np.asarray(area_failing)
+
+    neighborhood = measure_module._one_ring_refinement_mask(
+        area_failing_array,
+    )
+
+    np.testing.assert_array_equal(
+        neighborhood,
+        np.asarray(expected),
+    )
+
+
+def test_adaptive_measurement_cache_reuses_prior_interior_ordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fluid = cq.Solid.makeCylinder(
+        7.0,
+        10.0,
+        cq.Vector(),
+        cq.Vector(0.0, 1.0, 0.0),
+    )
+    first_nodes = np.linspace(0.0, 10.0, 5)
+    second_nodes = np.sort(
+        np.concatenate(
+            (
+                first_nodes,
+                0.5 * (first_nodes[:-1] + first_nodes[1:]),
+            )
+        )
+    )
+    requests: list[np.ndarray] = []
+    exact_measure_geometry = measure_module.measure_geometry
+
+    def record_request(fluid, nodes, *, y_min_mm, y_max_mm):
+        requests.append(np.asarray(nodes).copy())
+        return exact_measure_geometry(
+            fluid,
+            nodes,
+            y_min_mm=y_min_mm,
+            y_max_mm=y_max_mm,
+        )
+
+    monkeypatch.setattr(
+        measure_module,
+        "measure_geometry",
+        record_request,
+    )
+    cache: dict[float, tuple[float, ...]] = {}
+
+    measure_module._measure_geometry_cached(
+        fluid,
+        first_nodes,
+        y_min_mm=0.0,
+        y_max_mm=10.0,
+        cache=cache,
+    )
+    cached = measure_module._measure_geometry_cached(
+        fluid,
+        second_nodes,
+        y_min_mm=0.0,
+        y_max_mm=10.0,
+        cache=cache,
+    )
+    direct = exact_measure_geometry(
+        fluid,
+        second_nodes,
+        y_min_mm=0.0,
+        y_max_mm=10.0,
+    )
+
+    assert len(requests) == 2
+    assert set(requests[0][1:-1]).isdisjoint(requests[1][1:-1])
+    for name in (
+        "height_mm",
+        "volume_mm3",
+        "section_area_mm2",
+        "perimeter_mm",
+        "sidewall_area_mm2",
+        "total_wetted_area_mm2",
+    ):
+        np.testing.assert_array_equal(
+            getattr(cached, name),
+            getattr(direct, name),
+        )
+
+
 def test_rejects_kernel_metadata_contract_mismatch() -> None:
     fluid = cq.Solid.makeCylinder(
         2.0,

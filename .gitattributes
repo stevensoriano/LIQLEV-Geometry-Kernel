@@ -1,0 +1,4 @@
+geometry/output/*.step -text
+geometry/tables/*.csv -text
+geometry/tables/*.json -text
+geometry/audit/*.json -text
