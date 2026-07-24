@@ -11,6 +11,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import stat
 import sys
 from tempfile import TemporaryDirectory, mkdtemp
 import time
@@ -516,6 +517,82 @@ def _manifest_relative_paths(values: object) -> list[Path]:
     return paths
 
 
+def _is_link_or_reparse_point(path: Path, status: os.stat_result) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return (
+        path.is_symlink()
+        or bool(is_junction and is_junction())
+        or bool(
+            reparse_flag
+            and getattr(status, "st_file_attributes", 0) & reparse_flag
+        )
+    )
+
+
+def _preflight_managed_destinations(
+    output_root: Path,
+    managed_paths: list[Path],
+) -> None:
+    if output_root.exists() or output_root.is_symlink():
+        root_status = output_root.lstat()
+        if _is_link_or_reparse_point(output_root, root_status):
+            raise RuntimeError(
+                f"output root cannot be a linked destination: {output_root}"
+            )
+        if not stat.S_ISDIR(root_status.st_mode):
+            raise RuntimeError(
+                f"output root must be a directory: {output_root}"
+            )
+    resolved_root = output_root.resolve(strict=False)
+    for relative in managed_paths:
+        if (
+            not isinstance(relative, Path)
+            or not relative.parts
+            or relative.is_absolute()
+            or bool(relative.drive)
+            or ".." in relative.parts
+        ):
+            raise RuntimeError(
+                "managed artifact path must be a safe relative path: "
+                f"{relative!r}"
+            )
+        current = output_root
+        for index, part in enumerate(relative.parts):
+            current = current / part
+            try:
+                current_status = current.lstat()
+            except FileNotFoundError:
+                break
+            except OSError as exc:
+                raise RuntimeError(
+                    f"cannot inspect managed artifact destination: {current}"
+                ) from exc
+            if _is_link_or_reparse_point(current, current_status):
+                raise RuntimeError(
+                    f"linked destination component is not allowed: {current}"
+                )
+            if index == len(relative.parts) - 1:
+                if not stat.S_ISREG(current_status.st_mode):
+                    raise RuntimeError(
+                        "existing managed artifact destination must be a "
+                        f"regular file: {current}"
+                    )
+            elif not stat.S_ISDIR(current_status.st_mode):
+                raise RuntimeError(
+                    "managed artifact destination parent must be a "
+                    f"directory: {current}"
+                )
+        target = output_root / relative
+        try:
+            target.resolve(strict=False).relative_to(resolved_root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                "managed artifact path must resolve inside output root: "
+                f"{relative}"
+            ) from exc
+
+
 def _restore_promotion_backup(
     output_root: Path,
     backup_root: Path,
@@ -580,6 +657,7 @@ def _promote_staged_outputs(
     output_root: Path,
     managed_paths: list[Path],
 ) -> None:
+    _preflight_managed_destinations(output_root, managed_paths)
     output_root.parent.mkdir(parents=True, exist_ok=True)
     backup_root = Path(
         mkdtemp(

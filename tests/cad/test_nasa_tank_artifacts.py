@@ -356,6 +356,132 @@ def test_promotion_rolls_back_on_keyboard_interrupt(
         assert (output / relative).read_text(encoding="utf-8") == "old"
 
 
+def test_promotion_preflights_all_targets_before_first_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "geometry"
+    regular = Path("output/fluid.step")
+    non_file = Path("tables/geometry.npz")
+    managed = [regular, non_file]
+    for relative in managed:
+        (staging / relative).parent.mkdir(parents=True, exist_ok=True)
+        (staging / relative).write_text("new", encoding="utf-8")
+    (output / regular).parent.mkdir(parents=True, exist_ok=True)
+    (output / regular).write_text("old", encoding="utf-8")
+    (output / non_file).mkdir(parents=True)
+    directory_payload = output / non_file / "must-survive.txt"
+    directory_payload.write_text("directory content", encoding="utf-8")
+    real_replace = build_command.os.replace
+    replace_calls: list[tuple[object, object]] = []
+
+    def record_replace(source, target) -> None:
+        replace_calls.append((source, target))
+        real_replace(source, target)
+
+    monkeypatch.setattr(build_command.os, "replace", record_replace)
+
+    with pytest.raises(RuntimeError, match="regular file"):
+        build_command._promote_staged_outputs(staging, output, managed)
+
+    assert replace_calls == []
+    assert not list(tmp_path.glob(".nasa-tank-backup-*"))
+    assert (output / regular).read_text(encoding="utf-8") == "old"
+    assert (staging / regular).read_text(encoding="utf-8") == "new"
+    assert (output / non_file).is_dir()
+    assert directory_payload.read_text(encoding="utf-8") == (
+        "directory content"
+    )
+    assert (staging / non_file).read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.parametrize("escape_kind", ["parent", "absolute"])
+def test_promotion_rejects_unsafe_managed_paths_before_first_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    escape_kind: str,
+) -> None:
+    staging = tmp_path / "staging-area" / "staging"
+    output = tmp_path / "output-area" / "geometry"
+    if escape_kind == "parent":
+        managed = Path("../escaped.step")
+    else:
+        managed = (tmp_path / "absolute-escaped.step").resolve()
+    staged = staging / managed
+    target = output / managed
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text("new", encoding="utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("old", encoding="utf-8")
+    real_replace = build_command.os.replace
+    replace_calls: list[tuple[object, object]] = []
+
+    def record_replace(source, destination) -> None:
+        replace_calls.append((source, destination))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(build_command.os, "replace", record_replace)
+
+    with pytest.raises(RuntimeError, match="safe relative path"):
+        build_command._promote_staged_outputs(
+            staging,
+            output,
+            [managed],
+        )
+
+    assert replace_calls == []
+    assert not list(output.parent.glob(".nasa-tank-backup-*"))
+    assert staged.read_text(encoding="utf-8") == (
+        "old" if staged == target else "new"
+    )
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_promotion_rejects_linked_destination_component_before_first_move(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "geometry"
+    external = tmp_path / "external"
+    output.mkdir()
+    external.mkdir()
+    linked_parent = output / "linked"
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(external), str(linked_parent))
+    else:
+        linked_parent.symlink_to(external, target_is_directory=True)
+    managed = Path("linked/fluid.step")
+    staged = staging / managed
+    target = external / "fluid.step"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text("new", encoding="utf-8")
+    target.write_text("old", encoding="utf-8")
+    real_replace = build_command.os.replace
+    replace_calls: list[tuple[object, object]] = []
+
+    def record_replace(source, destination) -> None:
+        replace_calls.append((source, destination))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(build_command.os, "replace", record_replace)
+
+    with pytest.raises(RuntimeError, match="linked destination component"):
+        build_command._promote_staged_outputs(
+            staging,
+            output,
+            [managed],
+        )
+
+    assert replace_calls == []
+    assert not list(tmp_path.glob(".nasa-tank-backup-*"))
+    assert staged.read_text(encoding="utf-8") == "new"
+    assert target.read_text(encoding="utf-8") == "old"
+
+
 def test_promotion_retains_backup_when_promotion_and_rollback_fail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
