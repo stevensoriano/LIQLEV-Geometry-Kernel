@@ -398,3 +398,273 @@ as a deterministic way to exclude those micro-hole wall faces or to treat
 their loops as additional closure boundaries. This report does not recommend
 or implement either change because both alter the approved requirement that
 the selected network have only the two wet-side free boundaries.
+
+---
+
+# Task 8 Revision Continuation: Exact Closure-Slab Fluid Domain
+
+## Revised status
+
+GREEN after explicit user approval of the exact slab-minus-tank construction.
+This continuation preserves the blocker history above and supersedes only its
+obsolete conclusion that Task 8 lacked an approved deterministic construction.
+
+The normative result is the unique direct-cut component that strictly contains
+the loop-derived seed. It is one valid 40-face solid with one closed outer
+shell, exact closure-plane bounds, no carrier contact, no rejected-component
+topology, and the approved reference volume and surface area. The independent
+`100 mm` padding construction and exact splitter oracle agree.
+
+Task 9 was not started. No solver physics, numeric geometry-table extraction,
+mesh operation, healing, source-face ranking, equivalent primitive, or
+approximate fill was introduced.
+
+## Revised TDD evidence
+
+The intentionally untracked original test remained the starting point. Before
+either production module existed, its expectations were revised to cover the
+approved construction, exact reference metrics, Boolean inventories,
+padding/splitter oracles, closure mosaic, rejection gates, AP214 round trip,
+final inspection artifact, and source preservation.
+
+The fresh missing-production-module RED was:
+
+```text
+python -m pytest tests/cad/test_fluid_domain.py -q
+
+19 errors in 1.83s
+ModuleNotFoundError: No module named 'liqlev.cad.audit'
+```
+
+The first live implementation runs then exposed only installed OCP/CadQuery
+binding details: OCP 7.8 provides `IsDone()` but not `HasErrors()` on these
+Boolean wrappers, `BRepAlgoAPI_Splitter` accepts `SetArguments`/`SetTools`, the
+closed flag belongs to the sole outer shell rather than the solid container,
+and `cadquery.importers.importStep` returns a `Workplane`. These corrections
+did not change the approved algorithm or numeric result.
+
+The focused GREEN was:
+
+```text
+python -m pytest tests/cad/test_fluid_domain.py -q
+
+19 passed in 57.56s
+```
+
+## Exact construction
+
+The placed source solid is loaded only through
+`liqlev.cad.xcaf.load_named_product` using the exact product name
+`nhq01-m21a- 0202_short` and approved source SHA-256.
+
+At `1e-5 mm` plane tolerance and `1e-8` normal-parallelism tolerance, rim
+inventory produced:
+
+```text
+minimum-Y rim candidates:             1
+maximum-Y rim candidates:             1
+minimum-Y closed wires:              26
+maximum-Y closed wires:               2
+minimum-Y wet-loop area:  11432.587497137267 mm^2
+maximum-Y wet-loop area:  11432.587497137267 mm^2
+minimum wet-loop centre:
+  ( 2.1283774576526403e-14,
+   -275.40679123713335,
+    577.4827595452252) mm
+maximum wet-loop centre:
+  (-1.4376488654129075e-14,
+    275.2967912371334,
+    577.4827595452252) mm
+```
+
+The exact loop areas and centres select the central wet loops rather than the
+eight auxiliary loops or sixteen minimum-flange micro loops documented above.
+The derived seed, with no hard-coded location, is:
+
+```text
+(3.453642961198664e-15,
+ -0.0549999999999784,
+ 577.4827595452252) mm
+```
+
+The primary carrier uses exact closure `Y` faces and `25.0 mm` padding beyond
+the tank's `X/Z` bounds. Direct `BRepAlgoAPI_Cut(carrier, tank_body)` produced:
+
+```text
+whole result solids / shells / faces:   2 / 2 / 56
+whole result valid:                     true
+seed classifications:                  OUT, IN
+selected solids / shells / faces:       1 / 1 / 40
+selected valid / closed outer shell:    true / true
+volume:                                 98109377.7478651 mm^3
+surface area:                           1031668.462706133 mm^2
+bounds:
+  (-279.6700000711255, 279.6700000711255,
+   -275.4067913371334, 275.2967913371334,
+    297.8127594740996, 857.1527596163507) mm
+carrier X/Z contact:                    false
+exterior probes:                        OUT, OUT, OUT, OUT
+shared faces / edges / vertices:        0 / 0 / 0
+minimum/maximum closure faces:          27 / 3
+maximum closure-plane error:            3.371334287294303e-7 mm
+```
+
+No volume ranking is used. Every direct-cut solid is classified, exactly one
+must contain the seed strictly `IN`, and `ON` is rejected.
+
+The independently repeated `100.0 mm` construction selected the same valid
+40-face topology:
+
+```text
+solid / shell / face counts:            1 / 1 / 40
+volume difference:                      4.470348358154297e-8 mm^3
+surface-area difference:                3.4924596548080444e-10 mm^2
+six bounding-box differences:           all 0.0 mm
+```
+
+The independent exact splitter produced three solids with seed
+classifications `OUT, OUT, IN`. Its selected valid 40-face fluid had zero
+volume, area, and six-coordinate bounds difference from the direct cut.
+
+The accepted 27/3 closure-face mosaic is exact planar Boolean topology. No
+face-merging requirement or common-then-cut substitute is applied.
+
+## AP214 round trip and deterministic audit
+
+The final handoff STEP was exported explicitly as AP214IS, independently
+re-imported, and checked again. The source authority is recorded separately
+from the input B-Rep serialization and generated output hashes.
+
+```text
+pre volume:                       98109377.7478651 mm^3
+post volume:                      98109377.71163802 mm^3
+absolute volume difference:       0.03622707724571228 mm^3
+relative volume difference:       3.6925193164320727e-10
+pre area:                         1031668.462706133 mm^2
+post area:                        1031668.4622880891 mm^2
+surface-area difference:          0.0004180439282208681 mm^2
+maximum bounds difference:        9.999450867326232e-8 mm
+cap-plane error:                  3.371334287294303e-7 mm
+pre/post solids:                  1 / 1
+pre/post closed outer shells:     1 / 1
+pre/post faces:                   40 / 40
+pre/post validity:                true / true
+audit passed:                     true
+```
+
+An additional independent CadQuery import of the final file reported one
+solid, one closed outer shell, 40 faces, validity `true`, volume
+`98109377.71163802 mm^3`, and area `1031668.4622880891 mm^2`.
+
+Final artifact authorities:
+
+```text
+source SHA-256:
+0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5
+
+input B-Rep SHA-256:
+0D1A0B60BDC2056DCF7714E1CBE0C79A4A049B96DAB29AC44CDD12C440AB637F
+
+output STEP SHA-256:
+F139D3EBB745DF7CEAD64998AF1B6CB953EEE303C89914A6EE2FA56759677BA9
+
+audit JSON SHA-256:
+93DB82CAFB6CF9AA574868CD96B554B91ABF71C6767C9D5FA0DFD4F0B2A1D246
+```
+
+Final artifact paths:
+
+```text
+geometry/output/nhq01-m21a-0201_LIQLEV_FLUID_DOMAIN.step
+geometry/audit/nhq01-m21a-0201_LIQLEV_AUDIT.json
+```
+
+The final timed live gate took:
+
+```text
+XCAF load:                  34.91323830000056 s
+exact construction:         2.6782555999998294 s
+AP214 write/re-import/audit: 0.5387886000007711 s
+```
+
+## Source preservation
+
+After focused, combined, CAD/geometry, full-suite, and final timed live gates:
+
+```text
+size:             36844537 bytes
+modified time ns: 1784662504150033200
+SHA-256:          0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5
+```
+
+All three values exactly match the pre-operation snapshot. The source file was
+never copied into the repository, modified, overwritten, or used as an export
+target.
+
+## Verification
+
+```text
+python -m pytest tests/cad/test_fluid_domain.py -q
+19 passed in 57.56s
+
+python -m pytest tests/cad/test_xcaf_selection.py tests/cad/test_fluid_domain.py -q
+27 passed in 158.79s
+
+python -m pytest tests/cad tests/geometry -q
+79 passed in 166.41s
+
+python scripts/check_physics_baseline.py
+Physics baseline check passed for all three cases.
+
+python -m pytest -q
+117 passed in 128.50s
+```
+
+The final `git diff --check`, status, artifact inspection, and authorship
+checks are performed after this report is staged and are recorded in the
+controller handoff.
+
+## Files and artifact workflow
+
+Committed Task 8 intent:
+
+- `liqlev/cad/fluid_domain.py`
+- `liqlev/cad/audit.py`
+- `liqlev/cad/__init__.py`
+- `tests/cad/test_fluid_domain.py`
+- `docs/superpowers/specs/2026-07-23-liqlev-arbitrary-tank-geometry-design.md`
+- `docs/superpowers/plans/2026-07-23-liqlev-geometry-kernel-implementation.md`
+- `.superpowers/sdd/task-8-report.md`
+
+The final generated STEP and audit JSON remain uncommitted inspection
+artifacts for the later repository artifact workflow, as explicitly permitted
+by the revised brief.
+
+The intended commit message is:
+
+```text
+feat: construct exact tank fluid domain
+```
+
+Its sole author and committer are
+`Steven Soriano <steven.a.soriano@nasa.gov>`. The commit cannot contain its own
+hash; the controller handoff records that hash. No automated-assistant
+authorship, co-authorship, or attribution is included.
+
+## Assumptions and remaining validation limitations
+
+- The exact selected XCAF product remains the authoritative tank-material
+  solid. Separate PMD, baffle, spray-bar, fastener, and viewport-hardware
+  assembly products are neither fused nor subtracted.
+- The loop-derived central seed is safely interior for this source and is
+  rejected unless exactly one Boolean component classifies it strictly `IN`.
+- The `25/100 mm` padding comparison and splitter agreement demonstrate
+  construction invariance for the two approved exact oracles; they are not
+  proof against every possible future OpenCascade-version change.
+- STEP AP214 translation preserves acceptance metrics within the approved
+  tolerances but, as shown by the nonzero differences, is not byte-identical
+  B-Rep serialization.
+- This work establishes exact B-Rep numerical/topological consistency with
+  the approved source. Experimental validation, as-built tolerances,
+  deformation, cryogenic operating effects, and any higher-fidelity model
+  comparison remain later engineering validation activities.

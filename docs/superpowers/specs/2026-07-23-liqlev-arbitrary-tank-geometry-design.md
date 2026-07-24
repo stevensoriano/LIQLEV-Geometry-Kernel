@@ -120,16 +120,40 @@ The CAD preprocessor will:
 
 1. Load the assembly with STEP product structure and placements.
 2. Select only product `nhq01-m21a- 0202_short`.
-3. Identify the inner wet-surface face network connected to the two wet-side
-   port loops.
-4. Exclude the tank's outer material surface and all separate internal or
-   external assembly components.
-5. Create planar cap faces from the inner port loops at the two specified
-   `Y` planes.
-6. Sew the preserved inner faces and two caps into one closed shell.
-7. create one positive-volume solid whose interior is the usable fluid domain.
-8. Heal only gaps within the STEP model's native tolerance; no smoothing,
-   refitting, or contour simplification is allowed.
+3. Identify exactly one planar, assembly-`Y`-normal tank rim face at each
+   closure plane. Inventory every exact planar loop, treat the largest-area
+   loop as the outer rim, and require exactly one remaining loop concentric
+   with it. That loop is the wet opening.
+4. Derive a strict interior-classification seed from the midpoint of the two
+   wet-loop centres. The centres must define one assembly-`Y` axis.
+5. Build an exact rectangular carrier slab whose `Y` faces are the approved
+   closures and whose `X/Z` bounds extend `25 mm` beyond the tank bounds.
+6. Compute the direct exact OpenCascade Boolean
+   `carrier slab - tank body`, enumerate every result solid without volume
+   ranking, and retain exactly the one that classifies the seed strictly
+   `IN`.
+7. Reject carrier-boundary contact, exterior-probe inclusion, shared topology
+   with rejected Boolean components, invalid or multi-shell topology, or
+   closure/bounds errors.
+8. Independently repeat the direct cut with `100 mm` `X/Z` padding and require
+   invariant topology and geometry. Also split the primary carrier by the tank
+   with the exact OpenCascade splitter and require its independently
+   seed-selected solid to agree with the direct-cut result.
+
+The earlier source-face-network method was rejected after exact topology
+inventory. Traversal from both wet loops reached the same connected 218-face
+network, but that network included walls outside the closure slab and 16
+minimum-flange micro-holes. Even capping every free loop produced a valid
+236-face B-Rep with the full source-body `Y` bounds, more than `18 mm` beyond
+each approved closure, so validity alone did not make it the required fluid
+domain.
+
+The direct Boolean is normative. A common-then-cut variant is not substituted
+because it merges coplanar closure topology. The accepted exact result may
+therefore preserve a planar closure mosaic rather than one face per end; the
+NASA direct cut has 27 minimum-`Y` closure faces and 3 maximum-`Y` closure
+faces. Acceptance evaluates their geometric plane locations, not face
+merging.
 
 The primary deliverable is:
 
@@ -149,10 +173,20 @@ The exported and re-imported STEP must satisfy all of the following:
 - round-trip volume change is no greater than `1e-8` relative or
   `1e-3 mm^3` absolute, whichever is larger;
 - round-trip bounding-box coordinate change is no greater than `1e-5 mm`.
+- no contact with a carrier `X/Z` boundary and four deterministic exterior
+  probes all classified `OUT`;
+- no face, edge, or vertex shared with rejected direct-cut components;
+- invariant result from the independent `100 mm` padding construction and
+  agreement with the exact splitter oracle.
 
 The preprocessor will also save a machine-readable audit report and orthogonal
 section images inside the repository. Failure of any acceptance criterion
 prevents publication of the STEP as a valid output.
+
+These checks establish exact B-Rep numerical and topological consistency for
+the approved CAD source. They do not replace later experimental validation or
+higher-fidelity assessment of as-built tolerances, deformation, omitted
+hardware, or cryogenic operating effects.
 
 ## 6. Geometry Kernel
 

@@ -1484,30 +1484,49 @@ python -m pytest tests/cad/test_fluid_domain.py -q
 
 Expected: collection fails for `build_fluid_domain`.
 
-- [ ] **Step 3: Implement deterministic inner-loop and inner-wall selection**
+- [ ] **Step 3: Implement exact closure-slab-minus-tank construction**
 
 In `liqlev/cad/fluid_domain.py`:
 
-1. Find planar faces whose centroids lie at either closure ordinate within
-   `1e-5 mm` and whose normals are parallel to `Y` within `1e-8`.
-2. From each matching annular rim, choose the closed wire with the smaller
-   planar enclosed area; this is the wet-side opening loop.
-3. Require exactly one wet-side loop per closure plane.
-4. Build an edge-to-face adjacency map for all tank faces.
-5. Start from the non-planar face adjacent to each wet-side loop edge and
-   traverse connected faces without crossing either rim face.
-6. Intersect the two traversed face sets and require one connected inner face
-   network whose only free boundary wires are the two selected loops.
-7. Build one planar face from each loop, sew the inner faces and caps with
-   tolerance `1e-5 mm`, and convert the closed shell to a positive-volume
-   solid.
-8. Reject any repair that moves a vertex by more than `1e-5 mm`.
+1. Find exactly one planar, assembly-`Y`-normal rim face at each closure
+   ordinate within `1e-5 mm`; normal parallelism tolerance is `1e-8`.
+2. Inventory every closed wire by exact planar enclosed area and centroid.
+   Select the largest-area loop as the outer rim and require exactly one
+   remaining concentric loop, the `11432.587497137267 mm^2` wet opening.
+3. Require the wet-loop centres to define one assembly-`Y` axis and derive the
+   strict classification seed from their midpoint.
+4. Build an exact carrier prism with its `Y` faces at the closures and `25 mm`
+   deterministic padding beyond the tank's `X/Z` bounds.
+5. Compute the direct `BRepAlgoAPI_Cut(carrier, tank)`, enumerate every result
+   solid without volume ranking, and require exactly one seed classification
+   of strictly `IN`; `ON`, zero matches, or multiple matches are errors.
+6. Validate one positive-volume solid and closed shell, source-bound
+   containment, closure-plane geometry, no carrier `X/Z` contact, four
+   exterior probes `OUT`, and zero shared faces, edges, or vertices with
+   rejected direct-cut components.
+7. Repeat the exact direct cut with `100 mm` `X/Z` padding and require
+   invariant validity, counts, face topology, volume, area, and bounds.
+8. As an independent live oracle, split the primary carrier by the tank with
+   `BRepAlgoAPI_Splitter` and require its unique seed-selected solid to agree
+   with the direct-cut fluid. The expected splitter result has three solids;
+   only the seed-selected fluid is output.
 
 Expose `build_fluid_domain(tank_body: cq.Shape, *, y_min_mm: float,
 y_max_mm: float, plane_tolerance_mm: float = 1e-5) -> cq.Solid`.
 
-All topology-count failures raise `FluidDomainError` with observed face, wire,
-shell, and solid counts.
+All topology-count failures raise `FluidDomainError` with observed rim/wire,
+Boolean-component, classification, face, shell, solid, validity, volume,
+bounds, carrier-contact, probe, shared-topology, or invariance values.
+
+This replaces the rejected face-network traversal. The prior wet-loop
+traversals reached the same 218-face source network, including 16 flange
+micro-hole walls and geometry outside the closure slab. Capping every free
+loop could make a valid 236-face solid, but it retained the complete tank-body
+`Y` bounds and was therefore the wrong domain. Do not use that traversal.
+
+Do not require one closure face per end. The normative direct cut preserves an
+exact planar mosaic of 27 minimum-`Y` faces and 3 maximum-`Y` faces; validate
+geometric plane location.
 
 - [ ] **Step 4: Implement the CAD audit and STEP round trip**
 
@@ -1516,6 +1535,17 @@ shell count, face count, validity, cap-plane error, and round-trip differences.
 `write_step_round_trip` exports AP214, re-imports it, performs every acceptance
 check from the approved specification, writes JSON, and returns the re-imported
 solid plus audit.
+
+Generate and independently inspect:
+
+```text
+geometry/output/nhq01-m21a-0201_LIQLEV_FLUID_DOMAIN.step
+geometry/audit/nhq01-m21a-0201_LIQLEV_AUDIT.json
+```
+
+Record the immutable source and generated output SHA-256 values. These exact
+B-Rep checks demonstrate numerical/topological consistency; later
+experimental or higher-fidelity validation remains separate.
 
 - [ ] **Step 5: Run topology and round-trip tests**
 
@@ -1531,7 +1561,7 @@ Expected: all tests pass; temporary output has one valid closed solid.
 
 ```powershell
 git add liqlev/cad/fluid_domain.py liqlev/cad/audit.py tests/cad/test_fluid_domain.py
-git commit -m "feat: construct capped tank fluid domain"
+git commit -m "feat: construct exact tank fluid domain"
 ```
 
 ---
