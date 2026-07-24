@@ -56,6 +56,7 @@ AUDIT_RELATIVE = Path("audit/nhq01-m21a-0201_LIQLEV_AUDIT.json")
 PLANE_TOLERANCE_MM = 1e-5
 ROUND_TRIP_RELATIVE_VOLUME_TOLERANCE = 1e-8
 KERNEL_RELATIVE_TOLERANCE = 5e-4
+DIRECT_AREA_RELATIVE_TOLERANCE = 2e-3
 EXPECTED_AXIS_CONTRACT = ("+Y", "-Y", "ft", "ft^2", "ft^3")
 
 
@@ -77,6 +78,25 @@ def _sha256(path: Path) -> str:
 def _bounds(shape: cq.Shape) -> tuple[float, float, float, float, float, float]:
     box = shape.BoundingBox()
     return box.xmin, box.xmax, box.ymin, box.ymax, box.zmin, box.zmax
+
+
+def _audit_number_matches(
+    value: object,
+    expected: float,
+    *,
+    rel_tol: float,
+    abs_tol: float,
+) -> bool:
+    try:
+        actual = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(actual) and math.isclose(
+        actual,
+        expected,
+        rel_tol=rel_tol,
+        abs_tol=abs_tol,
+    )
 
 
 def _closure_plane_error(
@@ -514,6 +534,71 @@ def verify_geometry_root(
     expected_height_ft = (
         kernel.metadata.y_max_mm - kernel.metadata.y_min_mm
     ) / 304.8
+    authoritative_audit_fields = (
+        audit.get("face_count") == len(solid.Faces())
+        and _audit_number_matches(
+            audit.get("surface_area_mm2"),
+            solid.Area(),
+            rel_tol=1e-10,
+            abs_tol=1e-6,
+        )
+        and _audit_number_matches(
+            audit.get("cap_plane_max_error_mm"),
+            cap_error,
+            rel_tol=0.0,
+            abs_tol=1e-10,
+        )
+        and _audit_number_matches(
+            audit.get("total_volume_ft3"),
+            kernel.total_volume_ft3,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        and _audit_number_matches(
+            audit.get("total_height_ft"),
+            kernel.total_height_ft,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+        and audit.get("axis") == kernel.metadata.axis
+        == EXPECTED_AXIS_CONTRACT[0]
+        and audit.get("gravity_direction")
+        == kernel.metadata.gravity_direction
+        == EXPECTED_AXIS_CONTRACT[1]
+        and _audit_number_matches(
+            audit.get("refinement_relative_tolerance"),
+            KERNEL_RELATIVE_TOLERANCE,
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        )
+        and _audit_number_matches(
+            audit.get("direct_area_relative_tolerance"),
+            DIRECT_AREA_RELATIVE_TOLERANCE,
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        )
+    )
+    record(
+        "authoritative audit fields",
+        authoritative_audit_fields,
+        (
+            f"faces={audit.get('face_count')}/{len(solid.Faces())}, "
+            f"surface_area_mm2={audit.get('surface_area_mm2')}/{solid.Area()}, "
+            f"cap_error_mm={audit.get('cap_plane_max_error_mm')}/{cap_error}, "
+            f"volume_ft3={audit.get('total_volume_ft3')}/"
+            f"{kernel.total_volume_ft3}, "
+            f"height_ft={audit.get('total_height_ft')}/"
+            f"{kernel.total_height_ft}, "
+            f"axis={audit.get('axis')}/{kernel.metadata.axis}, "
+            f"gravity={audit.get('gravity_direction')}/"
+            f"{kernel.metadata.gravity_direction}, "
+            f"tolerances="
+            f"({audit.get('refinement_relative_tolerance')}, "
+            f"{audit.get('direct_area_relative_tolerance')})/"
+            f"({KERNEL_RELATIVE_TOLERANCE}, "
+            f"{DIRECT_AREA_RELATIVE_TOLERANCE})"
+        ),
+    )
     record(
         "height and node count",
         abs(kernel.total_height_ft - expected_height_ft) <= 1e-10
@@ -578,7 +663,7 @@ def verify_geometry_root(
         and float(measurement.get("integrated_dv_dh_relative", math.inf))
         <= KERNEL_RELATIVE_TOLERANCE
         and float(measurement.get("max_direct_area_relative", math.inf))
-        <= 2e-3
+        <= DIRECT_AREA_RELATIVE_TOLERANCE
         and int(measurement.get("eligible_direct_area_midpoints", 0)) > 0
         and measurement_matches_audit,
         f"values={measurement}, matches_audit={measurement_matches_audit}",

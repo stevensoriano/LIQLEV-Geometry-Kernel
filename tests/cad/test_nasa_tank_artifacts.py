@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 
 import numpy as np
@@ -219,6 +220,61 @@ def test_independent_cad_table_metrics_remeasure_exact_sections() -> None:
     assert metrics["eligible_direct_area_midpoints"] == 32
 
 
+@pytest.mark.parametrize(
+    ("field", "tampered_value"),
+    [
+        ("face_count", 39),
+        ("surface_area_mm2", 1.0),
+        ("cap_plane_max_error_mm", 0.0),
+        ("total_volume_ft3", 1.0),
+        ("total_height_ft", 1.0),
+        ("axis", "-Y"),
+        ("gravity_direction", "+Y"),
+        ("refinement_relative_tolerance", 1.0),
+        ("direct_area_relative_tolerance", 1.0),
+    ],
+)
+def test_checker_rejects_tampered_authoritative_audit_fields(
+    tmp_path: Path,
+    field: str,
+    tampered_value: object,
+) -> None:
+    source_step = check_command.DEFAULT_SOURCE_STEP
+    if not source_step.is_file():
+        source_step = tmp_path / "source.step"
+        source_step.write_bytes(b"portable checker regression source")
+        expected_source_hash = _sha256(source_step)
+    else:
+        expected_source_hash = EXPECTED_SOURCE_HASH
+    geometry_root = tmp_path / "geometry"
+    shutil.copytree(GEOMETRY_ROOT, geometry_root)
+    audit_path = geometry_root / check_command.AUDIT_RELATIVE
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    audit[field] = tampered_value
+    audit_path.write_text(
+        json.dumps(audit, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    checks = check_command.verify_geometry_root(
+        source_step=source_step,
+        geometry_root=geometry_root,
+        expected_source_sha256=expected_source_hash,
+        precomputed_measurement=audit["independent_measurement"],
+    )
+
+    authoritative = next(
+        (
+            check
+            for check in checks
+            if check.name == "authoritative audit fields"
+        ),
+        None,
+    )
+    assert authoritative is not None
+    assert not authoritative.passed, field
+
+
 def test_ordered_wire_render_points_follow_topology() -> None:
     cq = pytest.importorskip("cadquery", reason="CadQuery is not installed")
     wire = cq.Workplane("XZ").rect(8.0, 6.0).wire().val()
@@ -298,6 +354,56 @@ def test_promotion_rolls_back_on_keyboard_interrupt(
 
     for relative in managed:
         assert (output / relative).read_text(encoding="utf-8") == "old"
+
+
+def test_promotion_retains_backup_when_promotion_and_rollback_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = tmp_path / "staging"
+    output = tmp_path / "geometry"
+    first = Path("output/fluid.step")
+    second = Path("tables/geometry.npz")
+    managed = [first, second]
+    for relative in managed:
+        (staging / relative).parent.mkdir(parents=True, exist_ok=True)
+        (output / relative).parent.mkdir(parents=True, exist_ok=True)
+        (staging / relative).write_text("new", encoding="utf-8")
+        (output / relative).write_text("old", encoding="utf-8")
+    real_replace = build_command.os.replace
+    calls = 0
+
+    def fail_promotion_and_rollback(source, target) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("promotion failed")
+        if calls == 4:
+            raise OSError("rollback failed")
+        real_replace(source, target)
+
+    monkeypatch.setattr(
+        build_command.os,
+        "replace",
+        fail_promotion_and_rollback,
+    )
+
+    with pytest.raises(OSError, match="rollback failed"):
+        build_command._promote_staged_outputs(staging, output, managed)
+
+    backups = list(tmp_path.glob(".nasa-tank-backup-*"))
+    assert len(backups) == 1
+    backup = backups[0]
+    assert (backup / "promotion-manifest.json").is_file()
+    assert (backup / first).read_text(encoding="utf-8") == "old"
+    assert (output / first).read_text(encoding="utf-8") == "new"
+    assert (output / second).read_text(encoding="utf-8") == "old"
+
+    monkeypatch.setattr(build_command.os, "replace", real_replace)
+    assert build_command._recover_interrupted_promotions(output) == 1
+    assert (output / first).read_text(encoding="utf-8") == "old"
+    assert (output / second).read_text(encoding="utf-8") == "old"
+    assert not backup.exists()
 
 
 def test_next_build_recovers_hard_interrupted_promotion(

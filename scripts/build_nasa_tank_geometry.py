@@ -12,7 +12,7 @@ import platform
 import re
 import shutil
 import sys
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 import time
 from typing import Callable, TypeVar
 
@@ -527,8 +527,6 @@ def _restore_promotion_backup(
         backup = backup_root / relative
         target = output_root / relative
         if backup.is_file():
-            if target.is_file():
-                target.unlink()
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(backup, target)
         elif relative not in originally_existing and target.is_file():
@@ -583,16 +581,18 @@ def _promote_staged_outputs(
     managed_paths: list[Path],
 ) -> None:
     output_root.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(
-        prefix=".nasa-tank-backup-",
-        dir=output_root.parent,
-    ) as backup_text:
-        backup_root = Path(backup_text)
-        originally_existing = {
-            relative
-            for relative in managed_paths
-            if (output_root / relative).is_file()
-        }
+    backup_root = Path(
+        mkdtemp(
+            prefix=".nasa-tank-backup-",
+            dir=output_root.parent,
+        )
+    )
+    originally_existing = {
+        relative
+        for relative in managed_paths
+        if (output_root / relative).is_file()
+    }
+    try:
         (backup_root / "promotion-manifest.json").write_text(
             json.dumps(
                 {
@@ -612,26 +612,38 @@ def _promote_staged_outputs(
             + "\n",
             encoding="utf-8",
         )
+    except BaseException:
+        shutil.rmtree(backup_root)
+        raise
+    try:
+        for relative in managed_paths:
+            staged = staging_root / relative
+            target = output_root / relative
+            backup = backup_root / relative
+            if not staged.is_file():
+                raise RuntimeError(f"staged artifact is missing: {staged}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, backup)
+            os.replace(staged, target)
+    except BaseException:
         try:
-            for relative in managed_paths:
-                staged = staging_root / relative
-                target = output_root / relative
-                backup = backup_root / relative
-                if not staged.is_file():
-                    raise RuntimeError(f"staged artifact is missing: {staged}")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists():
-                    backup.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(target, backup)
-                os.replace(staged, target)
-        except BaseException:
             _restore_promotion_backup(
                 output_root,
                 backup_root,
                 managed_paths=managed_paths,
                 originally_existing=originally_existing,
             )
+        except BaseException as rollback_error:
+            rollback_error.add_note(
+                "promotion rollback failed; persistent recovery backup "
+                f"retained at {backup_root}"
+            )
             raise
+        shutil.rmtree(backup_root)
+        raise
+    shutil.rmtree(backup_root)
 
 
 def _build_staged(
