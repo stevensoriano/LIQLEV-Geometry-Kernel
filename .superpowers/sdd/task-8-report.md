@@ -668,3 +668,138 @@ authorship, co-authorship, or attribution is included.
   the approved source. Experimental validation, as-built tolerances,
   deformation, cryogenic operating effects, and any higher-fidelity model
   comparison remain later engineering validation activities.
+
+---
+
+## Post-implementation review fix: exact closure-face audit
+
+### Review finding and root cause
+
+Review identified that `write_step_round_trip` derived
+`cap_plane_error_mm` only from the pre/post solid bounding-box `Y` extrema.
+A valid smooth solid could therefore present the approved extrema without
+having either required planar, assembly-`Y`-normal closure face.
+
+The defect was isolated to audit validation; the exact construction already
+validates its 27/3 closure-face mosaic geometrically. No construction or
+solver behavior changed.
+
+### Regression RED
+
+A regression test first constructed a valid sphere whose centre and radius
+put its smooth `Y` extrema exactly at the approved closure ordinates. Before
+the fix, the audit exported, re-imported, and accepted it:
+
+```text
+python -m pytest tests/cad/test_fluid_domain.py -q \
+  -k y_extrema_without_planar_closure_faces
+
+FAILED test_round_trip_rejects_y_extrema_without_planar_closure_faces
+Failed: DID NOT RAISE <class 'liqlev.cad.fluid_domain.FluidDomainError'>
+1 failed, 19 deselected in 1.78s
+```
+
+This proved the test exercised the reported gap rather than an unrelated
+input-validity or STEP-translation failure.
+
+### Fix
+
+The audit now applies exact OpenCascade surface inspection to both the
+pre-export solid and independently imported solid:
+
+1. adapt every face with `BRepAdaptor_Surface`;
+2. retain only underlying `GeomAbs_Plane` surfaces;
+3. require the plane axis to be parallel to assembly `Y` within `1e-8`;
+4. require at least one such face at each approved closure ordinate within
+   `1e-5 mm`;
+5. derive `cap_plane_error_mm` from the maximum underlying plane-location
+   deviation.
+
+The former bounding-box closure-extrema test remains a separate rejection
+gate so this correction does not weaken any existing acceptance condition.
+Missing closure faces raise `FluidDomainError` with pre/post label, candidate
+counts, and observed assembly-`Y`-normal plane ordinates.
+
+The design specification's stale face-network/capping/sewing verification
+bullet was replaced with the normative direct-cut, `25/100 mm` padding,
+splitter-oracle, closure-face-geometry, and one-solid checks.
+
+### GREEN and covering verification
+
+Targeted regression:
+
+```text
+python -m pytest tests/cad/test_fluid_domain.py -q \
+  -k y_extrema_without_planar_closure_faces
+
+1 passed, 19 deselected in 1.43s
+```
+
+Complete Task 8:
+
+```text
+python -m pytest tests/cad/test_fluid_domain.py -q
+
+20 passed in 44.04s
+```
+
+Combined Task 7 and Task 8:
+
+```text
+python -m pytest tests/cad/test_xcaf_selection.py \
+  tests/cad/test_fluid_domain.py -q
+
+28 passed in 116.60s
+```
+
+Physics preservation:
+
+```text
+python scripts/check_physics_baseline.py
+
+Physics baseline check passed.
+```
+
+### Regenerated audit and independent inspection
+
+The combined live gate regenerated the final AP214 STEP and deterministic
+audit. The audit remains passed with one valid 40-face solid and one closed
+outer shell. Its corrected plane-derived value is:
+
+```text
+cap_plane_error_mm: 2.371334062445385e-7
+```
+
+A separate independent import and direct call to the exact plane validator
+reported:
+
+```text
+solids / shells / faces:       1 / 1 / 40
+valid / closed outer shell:    true / true
+closure-plane error:           2.3712999563940684e-7 mm
+volume:                        98109377.71163802 mm^3
+surface area:                  1031668.4622880891 mm^2
+```
+
+Regenerated artifact hashes:
+
+```text
+STEP:
+1DCE917A2B81A221A27676609F276A0826A21C02AEB8437794B6F75647884999
+
+audit JSON:
+BE765F29B266DE8B73F0F86372D5C3D8112C9A7D00577F28B3F3AD03A05C0513
+```
+
+The source authority remained byte-for-byte and metadata unchanged after both
+live gates and artifact regeneration:
+
+```text
+size:             36844537 bytes
+modified time ns: 1784662504150033200
+SHA-256:          0193EC296B5B754FFDC7B1652052F5B28BA99345A5BC89922D026DF011C837D5
+```
+
+The regenerated STEP and audit remain intentionally uncommitted inspection
+artifacts. The remaining experimental and higher-fidelity validation
+limitations documented above are unchanged.

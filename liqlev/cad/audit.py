@@ -9,8 +9,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import cadquery as cq
+from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepCheck import BRepCheck_Analyzer
 from OCP.BRepTools import BRepTools
+from OCP.GeomAbs import GeomAbs_Plane
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Interface import Interface_Static
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
@@ -126,6 +128,48 @@ def _metrics(shape: object, *, label: str) -> _ShapeMetrics:
     )
 
 
+def _closure_plane_error(shape: cq.Solid, *, label: str) -> float:
+    y_normal_planes: list[float] = []
+    for face in shape.Faces():
+        surface = BRepAdaptor_Surface(face.wrapped, True)
+        if surface.GetType() != GeomAbs_Plane:
+            continue
+        plane = surface.Plane()
+        direction = plane.Axis().Direction()
+        if (
+            math.hypot(direction.X(), direction.Z()) > 1e-8
+            or abs(abs(direction.Y()) - 1.0) > 1e-8
+        ):
+            continue
+        y_normal_planes.append(plane.Location().Y())
+
+    deviations: list[float] = []
+    candidate_counts: list[int] = []
+    for closure_y in (Y_MIN_MM, Y_MAX_MM):
+        candidates = [
+            abs(plane_y - closure_y)
+            for plane_y in y_normal_planes
+            if abs(plane_y - closure_y) <= PLANE_TOLERANCE_MM
+        ]
+        candidate_counts.append(len(candidates))
+        deviations.extend(candidates)
+    if any(count == 0 for count in candidate_counts):
+        raise FluidDomainError(
+            f"{label} requires planar assembly-Y-normal closure faces at "
+            f"y=({Y_MIN_MM}, {Y_MAX_MM}); observed candidate_counts="
+            f"{tuple(candidate_counts)}, Y-normal plane ordinates="
+            f"{tuple(sorted(y_normal_planes))}"
+        )
+    maximum_deviation = max(deviations)
+    if maximum_deviation > PLANE_TOLERANCE_MM:
+        raise FluidDomainError(
+            f"{label} closure-face plane deviation exceeds tolerance: "
+            f"maximum_deviation_mm={maximum_deviation}, "
+            f"tolerance_mm={PLANE_TOLERANCE_MM}"
+        )
+    return maximum_deviation
+
+
 def _source_authority() -> tuple[str, int, str]:
     try:
         provenance = json.loads(SOURCE_PROVENANCE.read_text(encoding="utf-8"))
@@ -198,6 +242,10 @@ def write_step_round_trip(
     """Export AP214, independently re-import it, and enforce all CAD gates."""
 
     pre = _metrics(fluid, label="pre-export fluid")
+    pre_closure_plane_error = _closure_plane_error(
+        fluid,
+        label="pre-export fluid",
+    )
     output = Path(output_path)
     audit_file = Path(audit_path)
     source_sha256, source_size, source_name = _source_authority()
@@ -218,6 +266,10 @@ def write_step_round_trip(
     output_sha256 = sha256_file(output)
     imported = _independent_import(output)
     post = _metrics(imported, label="post-import fluid")
+    post_closure_plane_error = _closure_plane_error(
+        imported,
+        label="post-import fluid",
+    )
 
     absolute_volume_difference = abs(post.volume_mm3 - pre.volume_mm3)
     relative_volume_difference = absolute_volume_difference / pre.volume_mm3
@@ -228,11 +280,15 @@ def write_step_round_trip(
     surface_area_difference = abs(
         post.surface_area_mm2 - pre.surface_area_mm2
     )
-    cap_plane_error = max(
+    closure_bounds_error = max(
         abs(pre.bounds_mm[2] - Y_MIN_MM),
         abs(pre.bounds_mm[3] - Y_MAX_MM),
         abs(post.bounds_mm[2] - Y_MIN_MM),
         abs(post.bounds_mm[3] - Y_MAX_MM),
+    )
+    cap_plane_error = max(
+        pre_closure_plane_error,
+        post_closure_plane_error,
     )
     volume_tolerance = max(
         ABSOLUTE_VOLUME_TOLERANCE_MM3,
@@ -244,6 +300,7 @@ def write_step_round_trip(
         "volume_tolerance_mm3": volume_tolerance,
         "bounding_box_differences_mm": bounding_box_differences,
         "cap_plane_error_mm": cap_plane_error,
+        "closure_bounds_error_mm": closure_bounds_error,
         "pre_counts": (
             pre.solid_count,
             pre.shell_count,
@@ -259,6 +316,7 @@ def write_step_round_trip(
         absolute_volume_difference <= volume_tolerance
         and max(bounding_box_differences) <= PLANE_TOLERANCE_MM
         and cap_plane_error <= PLANE_TOLERANCE_MM
+        and closure_bounds_error <= PLANE_TOLERANCE_MM
         and pre.solid_count == post.solid_count == 1
         and pre.shell_count == post.shell_count == 1
         and pre.face_count == post.face_count

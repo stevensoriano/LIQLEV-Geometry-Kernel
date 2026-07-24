@@ -368,8 +368,9 @@ boundary-layer integration.
 
 ### 10.1 Geometry tests
 
-- Unit tests for plane identification, face-network selection, capping,
-  sewing, and one-solid validation.
+- Unit tests for exact rim/loop identification, strict-seed direct-cut
+  selection, `25/100 mm` padding invariance, the splitter oracle, closure-face
+  plane geometry, and one-solid validation.
 - Analytic cylinder and sphere fixtures with exact expected `A`, `V`, `P`,
   and wetted-area functions.
 - Source-tank STEP round-trip checks from section 5.2.

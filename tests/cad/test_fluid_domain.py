@@ -411,6 +411,32 @@ def test_round_trip_rejects_non_solid_input(cad_modules, tmp_path: Path) -> None
         )
 
 
+def test_round_trip_rejects_y_extrema_without_planar_closure_faces(
+    cad_modules,
+    tmp_path: Path,
+) -> None:
+    cq, audit_module, fluid_domain, _ = cad_modules
+    radius = (Y_MAX_MM - Y_MIN_MM) / 2.0
+    center_y = (Y_MIN_MM + Y_MAX_MM) / 2.0
+    smooth = cq.Solid.makeSphere(
+        radius,
+        cq.Vector(0.0, center_y, 0.0),
+    )
+
+    assert smooth.isValid()
+    assert smooth.BoundingBox().ymin == pytest.approx(Y_MIN_MM, abs=1e-8)
+    assert smooth.BoundingBox().ymax == pytest.approx(Y_MAX_MM, abs=1e-8)
+    with pytest.raises(
+        fluid_domain.FluidDomainError,
+        match=r"planar assembly-Y-normal closure faces",
+    ):
+        audit_module.write_step_round_trip(
+            smooth,
+            tmp_path / "smooth.step",
+            tmp_path / "smooth.audit.json",
+        )
+
+
 def test_live_source_remains_byte_for_byte_unchanged(
     cad_modules,
     source_snapshot,
