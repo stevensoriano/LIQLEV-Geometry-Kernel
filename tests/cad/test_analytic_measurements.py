@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
+from liqlev.cad import measure as measure_module
 from liqlev.cad.measure import (
     GeometryMeasurementError,
     build_geometry_kernel,
@@ -469,6 +470,63 @@ def test_accepts_exact_endpoint_face_mosaics() -> None:
         sidewall_area_mm2 * MM2_TO_FT2,
         rtol=1e-8,
     )
+
+
+def test_rejects_endpoint_boundary_loops_touching_at_one_vertex() -> None:
+    lower_left = cq.Solid.makeBox(
+        1.0,
+        1.0,
+        1.0,
+        cq.Vector(-1.0, 0.0, -1.0),
+    )
+    lower_right = cq.Solid.makeBox(
+        1.0,
+        1.0,
+        1.0,
+        cq.Vector(0.0, 0.0, 0.0),
+    )
+    upper_bridge = cq.Solid.makeBox(
+        2.0,
+        1.5,
+        2.0,
+        cq.Vector(-1.0, 0.5, -1.0),
+    )
+    fluid = lower_left.fuse(
+        lower_right,
+        upper_bridge,
+        glue=False,
+    ).Solids()[0]
+    bottom_faces = [
+        face
+        for face in fluid.Faces()
+        if face.geomType() == "PLANE"
+        and abs(face.Center().y) <= 1e-9
+        and face.normalAt(face.Center()).y < -1.0 + 1e-9
+    ]
+
+    assert fluid.isValid()
+    assert len(bottom_faces) == 2
+    assert [len(face.Edges()) for face in bottom_faces] == [4, 4]
+    shared_vertices = [
+        left_vertex
+        for left_vertex in bottom_faces[0].Vertices()
+        if any(
+            left_vertex.isSame(right_vertex)
+            for right_vertex in bottom_faces[1].Vertices()
+        )
+    ]
+    assert len(shared_vertices) == 1
+
+    with pytest.raises(
+        GeometryMeasurementError,
+        match="ambiguous endpoint boundary",
+    ):
+        measure_module._endpoint_section_metrics(
+            fluid,
+            0.0,
+            -1.0,
+            1e-8,
+        )
 
 
 @pytest.mark.parametrize("max_nodes", [True, 32, 1026, 33.0])

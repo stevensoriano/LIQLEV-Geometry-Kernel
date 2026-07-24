@@ -126,6 +126,31 @@ def _endpoint_section_metrics(
         raise GeometryMeasurementError(
             f"endpoint section at Y={y_mm:.12g} mm has no exterior boundary"
         )
+
+    vertex_edge_groups: list[tuple[cq.Vertex, list[int]]] = []
+    for edge_index, edge in enumerate(boundary_edges):
+        edge_vertices = edge.Vertices()
+        if len(edge_vertices) == 1 and edge.IsClosed():
+            edge_vertices = [edge_vertices[0], edge_vertices[0]]
+        for vertex in edge_vertices:
+            for group_vertex, incident_edge_indices in vertex_edge_groups:
+                if vertex.isSame(group_vertex):
+                    incident_edge_indices.append(edge_index)
+                    break
+            else:
+                vertex_edge_groups.append((vertex, [edge_index]))
+    invalid_vertex_degrees = [
+        len(incident_edge_indices)
+        for _, incident_edge_indices in vertex_edge_groups
+        if len(incident_edge_indices) != 2
+    ]
+    if invalid_vertex_degrees:
+        raise GeometryMeasurementError(
+            f"endpoint section at Y={y_mm:.12g} mm has ambiguous endpoint "
+            f"boundary vertex degree; expected 2, observed "
+            f"{tuple(invalid_vertex_degrees)}"
+        )
+
     unassigned = list(boundary_edges)
     edge_components: list[list[cq.Edge]] = []
     while unassigned:
@@ -168,6 +193,24 @@ def _endpoint_section_metrics(
             f"endpoint section at Y={y_mm:.12g} mm requires one closed "
             f"outer boundary with no inner or open boundary; observed "
             f"{len(boundaries)} boundaries, closed={boundary_states}"
+        )
+    assembled_edges = boundaries[0].Edges()
+    input_identity_counts = [
+        sum(edge.isSame(assembled_edge) for assembled_edge in assembled_edges)
+        for edge in boundary_edges
+    ]
+    assembled_identity_counts = [
+        sum(assembled_edge.isSame(edge) for edge in boundary_edges)
+        for assembled_edge in assembled_edges
+    ]
+    if (
+        len(assembled_edges) != len(boundary_edges)
+        or any(count != 1 for count in input_identity_counts)
+        or any(count != 1 for count in assembled_identity_counts)
+    ):
+        raise GeometryMeasurementError(
+            f"endpoint section at Y={y_mm:.12g} mm has ambiguous endpoint "
+            "boundary edge coverage after assembly"
         )
     return (
         float(sum(face.Area() for face in faces)),

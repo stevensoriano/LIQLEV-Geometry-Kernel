@@ -423,3 +423,92 @@ Relative to the preceding Task 9 correction, focused runtime changed from
 `44.81s` to `47.21s` and combined runtime changed from `57.33s` to `59.17s`.
 The Task 10 scripts, Task 10 artifact test, and all generated artifacts remain
 unmodified and uncommitted by this correction.
+
+## Re-review correction: touching endpoint boundary loops
+
+Closure-mosaic re-review identified an ambiguity in the endpoint boundary
+assembly. Two otherwise separate closed loops that touch at one vertex form
+one connected edge component. `Wire.assembleEdges` can return one closed wire
+for that component while silently omitting the other loop, causing the
+endpoint perimeter to be under-measured.
+
+A deterministic valid-solid regression was written first. Two unit bottom
+prisms have square closure faces that touch at exactly one OpenCascade
+topological vertex, and a solid upper bridge joins the volumes above the
+endpoint. The result is one valid solid with two bottom faces and eight
+boundary edges.
+
+The regression produced the expected RED because the endpoint helper returned
+area `2.0 mm^2` and perimeter `4.0 mm` instead of rejecting the ambiguous
+boundary:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_rejects_endpoint_boundary_loops_touching_at_one_vertex -q
+
+Failed: DID NOT RAISE <class 'liqlev.cad.measure.GeometryMeasurementError'>
+1 failed in 1.99s
+```
+
+Endpoint mosaic validation now enforces two independent exact-topology
+invariants:
+
+1. Before assembly, every boundary vertex must have degree exactly two.
+   Vertices are grouped with OpenCascade `isSame` identity, so the shared
+   vertex in the regression has degree four and is rejected.
+2. After assembly, the accepted wire must contain exactly the same number of
+   edges as the input boundary and must match every input and assembled edge
+   exactly once in both directions using `isSame`. This rejects dropped,
+   duplicated, or added edges even if the returned wire is closed.
+
+The pre-existing one-closed-boundary rule remains in place, retaining
+rejection of open, multiple, and inner boundaries. No tolerances changed.
+
+Focused GREEN:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_rejects_endpoint_boundary_loops_touching_at_one_vertex -q
+
+1 passed in 1.94s
+
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_accepts_exact_endpoint_face_mosaics -q
+
+1 passed in 3.51s
+```
+
+A read-only probe confirmed that the current exact STEP remains one valid
+40-face solid with 27 minimum and 3 maximum closure faces. Its measurements
+remain unchanged:
+
+```text
+minimum cap area/perimeter:
+  33883.63747543928 mm^2 / 652.5290387545534 mm
+midpoint volume/area/perimeter:
+  49210880.43089363 mm^3
+  245720.63996353454 mm^2
+  1757.2184353059488 mm
+maximum cap area/perimeter:
+  33980.3580917779 mm^2 / 653.459694976168 mm
+full volume/sidewall area:
+  98109377.71163802 mm^3 / 963804.466720872 mm^2
+```
+
+Final gates:
+
+```text
+python -m pytest tests/cad/test_analytic_measurements.py -q
+
+13 passed in 46.17s
+
+python -m pytest tests/cad/test_analytic_measurements.py tests/geometry -q
+
+65 passed in 60.70s
+```
+
+The Task 10 scripts, Task 10 artifact test, and all generated artifacts remain
+unmodified and uncommitted by this correction.
