@@ -10,6 +10,7 @@ from liqlev.cad.measure import (
     build_geometry_kernel,
     measure_geometry,
 )
+from liqlev.geometry.jit import eval_ppoly_derivative
 from liqlev.geometry.package import validate_geometry_kernel
 from liqlev.geometry.schema import GeometryMetadata
 
@@ -155,6 +156,102 @@ def test_measures_exact_y_aligned_sphere() -> None:
         samples.total_wetted_area_mm2[1:],
         sidewall[1:],
         rtol=1e-8,
+    )
+
+
+def test_builds_validated_sphere_geometry_kernel() -> None:
+    radius = 31.0
+    y_min_mm = -11.0
+    y_max_mm = y_min_mm + 2.0 * radius
+    fluid = cq.Solid.makeSphere(
+        radius,
+        cq.Vector(0.0, y_min_mm + radius, 0.0),
+        cq.Vector(0.0, 1.0, 0.0),
+        -90.0,
+        90.0,
+        360.0,
+    )
+
+    kernel = build_geometry_kernel(
+        fluid,
+        metadata=metadata(y_min_mm, y_max_mm),
+        max_nodes=1025,
+    )
+
+    validate_geometry_kernel(kernel)
+    assert 33 < len(kernel.height_ft) <= 1025
+    height_mm = kernel.height_ft / MM_TO_FT
+    area, volume, perimeter, sidewall = sphere_expected(radius, height_mm)
+    np.testing.assert_allclose(kernel.volume_ft3[1:], volume[1:] * MM3_TO_FT3)
+    np.testing.assert_allclose(
+        kernel.section_area_ft2[1:-1],
+        area[1:-1] * MM2_TO_FT2,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        kernel.perimeter_ft[1:-1],
+        perimeter[1:-1] * MM_TO_FT,
+        rtol=1e-8,
+    )
+    np.testing.assert_allclose(
+        kernel.sidewall_area_ft2[1:],
+        sidewall[1:] * MM2_TO_FT2,
+        rtol=1e-8,
+    )
+    evaluation_height_ft = np.linspace(
+        kernel.height_ft[0],
+        kernel.height_ft[-1],
+        1025,
+    )
+    evaluation_area_ft2 = np.asarray(
+        [
+            eval_ppoly_derivative(
+                float(height_ft),
+                kernel.height_ft,
+                kernel.volume_coefficients,
+            )
+            for height_ft in evaluation_height_ft
+        ]
+    )
+    integrated_volume_ft3 = np.trapezoid(
+        evaluation_area_ft2,
+        evaluation_height_ft,
+    )
+    assert (
+        abs(integrated_volume_ft3 - kernel.volume_ft3[-1])
+        / kernel.volume_ft3[-1]
+        <= 5e-4
+    )
+    midpoint_height_ft = 0.5 * (
+        kernel.height_ft[:-1] + kernel.height_ft[1:]
+    )
+    midpoint_height_mm = midpoint_height_ft / MM_TO_FT
+    midpoint_area_mm2 = sphere_expected(radius, midpoint_height_mm)[0]
+    derivative_area_mm2 = np.asarray(
+        [
+            eval_ppoly_derivative(
+                float(height_ft),
+                kernel.height_ft,
+                kernel.volume_coefficients,
+            )
+            / MM2_TO_FT2
+            for height_ft in midpoint_height_ft
+        ]
+    )
+    topology_clearance_mm = 2.0 * radius / 32.0
+    away_from_topology = (
+        (midpoint_height_mm > topology_clearance_mm)
+        & (
+            midpoint_height_mm
+            < 2.0 * radius - topology_clearance_mm
+        )
+    )
+    np.testing.assert_array_less(
+        np.abs(
+            derivative_area_mm2[away_from_topology]
+            - midpoint_area_mm2[away_from_topology]
+        ),
+        2e-3 * midpoint_area_mm2[away_from_topology],
     )
 
 

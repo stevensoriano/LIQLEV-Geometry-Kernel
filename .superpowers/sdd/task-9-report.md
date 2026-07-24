@@ -159,3 +159,69 @@ Task 9 commit.
 - No NASA production geometry tables were created.
 - Task 10 remains responsible for provenance-complete NASA metadata, artifact
   generation, images, and independent production verification.
+
+## Review correction: midpoint derivative refinement
+
+Task 9 review identified that direct CAD area was compared with PCHIP
+`dV/dh` only at table nodes after adaptive refinement had already stopped.
+A valid Y-aligned sphere passed the cumulative-volume midpoint tolerance with
+33 nodes, then failed terminally because endpoint-conditioned PCHIP nodal
+slopes are not the analytic sphere derivatives.
+
+The requested sphere kernel regression was written before the correction and
+produced the expected RED:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_builds_validated_sphere_geometry_kernel -q
+
+GeometryMeasurementError:
+direct CAD area and dV/dh disagree by more than 0.2% away from topology nodes
+
+1 failed in 2.81s
+```
+
+The adaptive pass now compares exact CAD section area with PCHIP `dV/dh` at
+the already measured interval midpoints. Midpoint disagreement above `0.2%`
+drives subdivision together with the original cumulative-volume and
+sidewall-area criteria. Degenerate endpoint and topology neighborhoods use
+the fixed spacing of the initial 33-node grid; these neighborhoods are not
+direct-area authorities, but are subdivided alongside adjacent area failures
+so endpoint-conditioned slopes converge rather than contaminating the first
+eligible midpoint. The final validator repeats the same midpoint criterion
+from the accepted exact samples. Failure to converge within `max_nodes`
+continues to raise `GeometryMeasurementError`.
+
+The sphere regression independently checks:
+
+- a validated `GeometryKernel`;
+- more than 33 and no more than 1025 refined nodes;
+- exact sphere volume, direct area, perimeter, and sidewall samples;
+- 1025-point integrated `dV/dh` volume error no greater than `0.05%`; and
+- midpoint direct-area/derivative disagreement below `0.2%` away from the
+  fixed topology neighborhoods.
+
+Post-correction evidence:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_builds_validated_sphere_geometry_kernel -q
+
+1 passed in 5.83s
+
+python -m pytest tests/cad/test_analytic_measurements.py -q
+
+10 passed in 7.23s
+
+python -m pytest tests/cad/test_analytic_measurements.py tests/geometry -q
+
+62 passed in 20.95s
+```
+
+Compared with the pre-correction gates, focused analytic runtime increased
+from `3.26s` to `7.23s` and the combined analytic/geometry runtime increased
+from `16.62s` to `20.95s`. The added time is the expected offline cost of exact
+B-Rep midpoint sections for derivative-driven sphere refinement; runtime
+solver behavior and the physics baseline are unchanged.

@@ -17,6 +17,7 @@ MM3_TO_FT3 = MM_TO_FT**3
 _REFINEMENT_RELATIVE_TOLERANCE = 5e-4
 _VOLUME_VALIDATION_RELATIVE_TOLERANCE = 5e-4
 _AREA_VALIDATION_RELATIVE_TOLERANCE = 2e-3
+_INITIAL_UNIFORM_NODE_COUNT = 33
 _MAXIMUM_NODE_LIMIT = 1025
 
 
@@ -293,7 +294,13 @@ def _initial_absolute_nodes(
             < y_max_mm - tolerance_mm
         }
     )
-    nodes = list(np.linspace(y_min_mm, y_max_mm, 33))
+    nodes = list(
+        np.linspace(
+            y_min_mm,
+            y_max_mm,
+            _INITIAL_UNIFORM_NODE_COUNT,
+        )
+    )
     for topology_node in topology_y:
         distances = np.abs(np.asarray(nodes) - topology_node)
         nearest = int(np.argmin(distances))
@@ -326,6 +333,47 @@ def _select_samples(
     )
 
 
+def _midpoint_area_masks(
+    midpoint_height: np.ndarray,
+    direct_area: np.ndarray,
+    breaks: np.ndarray,
+    volume_coefficients: np.ndarray,
+    absolute_y_mm: np.ndarray,
+    topology_y_mm: np.ndarray,
+    topology_clearance_mm: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    derivative_area = np.asarray(
+        [
+            eval_ppoly_derivative(
+                float(height),
+                breaks,
+                volume_coefficients,
+            )
+            for height in midpoint_height
+        ]
+    )
+    topology_neighborhood = np.asarray(
+        [
+            np.min(np.abs(topology_y_mm - absolute_y))
+            <= topology_clearance_mm
+            for absolute_y in absolute_y_mm
+        ]
+    )
+    positive_area = direct_area > 1e-14 * max(
+        1.0,
+        float(np.max(direct_area)),
+    )
+    failing = (
+        ~topology_neighborhood
+        & positive_area
+        & (
+            np.abs(derivative_area - direct_area)
+            > _AREA_VALIDATION_RELATIVE_TOLERANCE * direct_area
+        )
+    )
+    return failing, topology_neighborhood
+
+
 def _adaptive_measurements(
     fluid: cq.Solid,
     *,
@@ -333,7 +381,7 @@ def _adaptive_measurements(
     y_max_mm: float,
     max_nodes: int,
     tolerance_mm: float,
-) -> tuple[GeometrySamplesMM, np.ndarray]:
+) -> tuple[GeometrySamplesMM, np.ndarray, GeometrySamplesMM]:
     nodes, topology_y = _initial_absolute_nodes(
         fluid,
         y_min_mm,
@@ -360,6 +408,10 @@ def _adaptive_measurements(
         node_indices = np.arange(0, len(combined), 2)
         midpoint_indices = np.arange(1, len(combined), 2)
         node_samples = _select_samples(combined_samples, node_indices)
+        midpoint_samples = _select_samples(
+            combined_samples,
+            midpoint_indices,
+        )
         volume_coefficients = pchip_coefficients(
             node_samples.height_mm,
             node_samples.volume_mm3,
@@ -407,8 +459,24 @@ def _adaptive_measurements(
             )
             > _REFINEMENT_RELATIVE_TOLERANCE * sidewall_scale
         )
+        area_failing, topology_neighborhood = _midpoint_area_masks(
+            midpoint_samples.height_mm,
+            midpoint_samples.section_area_mm2,
+            node_samples.height_mm,
+            volume_coefficients,
+            midpoints,
+            topology_y,
+            max(
+                tolerance_mm,
+                (y_max_mm - y_min_mm)
+                / (_INITIAL_UNIFORM_NODE_COUNT - 1),
+            ),
+        )
+        failing |= area_failing
+        if np.any(area_failing):
+            failing |= topology_neighborhood
         if not np.any(failing):
-            return node_samples, topology_y
+            return node_samples, topology_y, midpoint_samples
         if len(nodes) + int(np.count_nonzero(failing)) > max_nodes:
             raise GeometryMeasurementError(
                 f"adaptive measurement did not converge within "
@@ -422,6 +490,7 @@ def _validate_measured_kernel(
     kernel: GeometryKernel,
     topology_y_mm: np.ndarray,
     tolerance_mm: float,
+    midpoint_samples: GeometrySamplesMM,
 ) -> None:
     expected_volume_ft3 = fluid.Volume() * MM3_TO_FT3
     volume_scale = max(abs(expected_volume_ft3), np.finfo(np.float64).tiny)
@@ -460,33 +529,23 @@ def _validate_measured_kernel(
             "integrated dV/dh disagrees with final volume by more than 0.05%"
         )
 
-    absolute_y_mm = kernel.height_ft / MM_TO_FT + kernel.metadata.y_min_mm
-    topology_clearance = max(tolerance_mm, 1e-10)
-    away_from_topology = np.asarray(
-        [
-            np.min(np.abs(topology_y_mm - absolute_y)) > topology_clearance
-            for absolute_y in absolute_y_mm
-        ]
-    )
-    direct_area = kernel.section_area_ft2[away_from_topology]
-    derivative_area = np.asarray(
-        [
-            eval_ppoly_derivative(
-                float(height_ft),
-                kernel.height_ft,
-                kernel.volume_coefficients,
+    area_failing, _ = _midpoint_area_masks(
+        midpoint_samples.height_mm * MM_TO_FT,
+        midpoint_samples.section_area_mm2 * MM2_TO_FT2,
+        kernel.height_ft,
+        kernel.volume_coefficients,
+        midpoint_samples.height_mm + kernel.metadata.y_min_mm,
+        topology_y_mm,
+        max(
+            tolerance_mm,
+            (
+                kernel.metadata.y_max_mm
+                - kernel.metadata.y_min_mm
             )
-            for height_ft in kernel.height_ft[away_from_topology]
-        ]
+            / (_INITIAL_UNIFORM_NODE_COUNT - 1),
+        ),
     )
-    positive_area = direct_area > 1e-14 * max(
-        1.0,
-        float(np.max(kernel.section_area_ft2)),
-    )
-    if np.any(
-        np.abs(derivative_area[positive_area] - direct_area[positive_area])
-        > _AREA_VALIDATION_RELATIVE_TOLERANCE * direct_area[positive_area]
-    ):
+    if np.any(area_failing):
         raise GeometryMeasurementError(
             "direct CAD area and dV/dh disagree by more than 0.2% away "
             "from topology nodes"
@@ -506,14 +565,17 @@ def build_geometry_kernel(
     if (
         isinstance(max_nodes, bool)
         or not isinstance(max_nodes, int)
-        or not 33 <= max_nodes <= _MAXIMUM_NODE_LIMIT
+        or not _INITIAL_UNIFORM_NODE_COUNT
+        <= max_nodes
+        <= _MAXIMUM_NODE_LIMIT
     ):
         raise GeometryMeasurementError(
-            f"max_nodes must be an integer from 33 through "
+            f"max_nodes must be an integer from "
+            f"{_INITIAL_UNIFORM_NODE_COUNT} through "
             f"{_MAXIMUM_NODE_LIMIT}"
         )
     y_min_mm, y_max_mm, tolerance_mm = _metadata_interval(fluid, metadata)
-    samples, topology_y_mm = _adaptive_measurements(
+    samples, topology_y_mm, midpoint_samples = _adaptive_measurements(
         fluid,
         y_min_mm=y_min_mm,
         y_max_mm=y_max_mm,
@@ -552,5 +614,6 @@ def build_geometry_kernel(
         kernel,
         topology_y_mm,
         tolerance_mm,
+        midpoint_samples,
     )
     return kernel
