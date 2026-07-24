@@ -191,7 +191,7 @@ python -m pytest tests/geometry/test_nasa_tank_solver.py -q
 To intentionally regenerate the tracked solver result manifest:
 
 ```powershell
-python validation/custom_geometry_cases.py
+python -m validation.custom_geometry_cases
 ```
 
 That command records the current solver commit, dependency versions, artifact
