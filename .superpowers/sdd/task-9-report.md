@@ -225,3 +225,94 @@ from `3.26s` to `7.23s` and the combined analytic/geometry runtime increased
 from `16.62s` to `20.95s`. The added time is the expected offline cost of exact
 B-Rep midpoint sections for derivative-driven sphere refinement; runtime
 solver behavior and the physics baseline are unchanged.
+
+## Second review correction: non-vacuous dense-topology validation
+
+Re-review identified that applying the initial-grid spacing as an exclusion
+radius around every vertex ordinate could make the `0.2%` gate vacuous. A
+deterministic valid `32 mm` zigzag prism was added with:
+
+- 17 topology ordinates at `Y = 0, 2, ..., 32 mm`;
+- alternating `8 mm` and `12 mm` half-widths; and
+- a `5 mm` extrusion depth.
+
+Before the correction, the overlapping `1 mm` exclusion neighborhoods covered
+every interval midpoint. The builder certified the initial 33 nodes even
+though the independently evaluated midpoint area/derivative disagreement was
+`2.5%`.
+
+The regression was written first and produced the expected RED:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_dense_topology_cannot_make_area_validation_vacuous -q
+
+assert len(kernel.height_ft) > 33
+E assert 33 > 33
+
+1 failed in 3.51s
+```
+
+The final area gate now:
+
+- excludes an interval midpoint for topology only when it numerically
+  coincides with an exact topology ordinate, using the scale-aware CAD
+  tolerance;
+- permits a fixed initial-grid neighborhood only for endpoints whose exact
+  section area is numerically zero;
+- requires at least one eligible positive-area midpoint in both adaptive and
+  final validation;
+- evaluates every other nearby vertex midpoint as authoritative; and
+- uses topology neighborhoods only to drive symmetric subdivision when an
+  authoritative midpoint fails, never to exclude those midpoints.
+
+This preserves the sphere's necessary treatment at its two true zero-area
+endpoints without allowing dense interior topology to suppress validation.
+The `0.2%` area tolerance, `0.05%` integrated-volume tolerance, 1025-point
+integration check, and 1025-node maximum remain unchanged.
+
+Final exact metrics:
+
+```text
+sphere:
+  nodes:                         79
+  maximum eligible area error:  0.171749616878%
+  standalone build time:        3.685330 s
+
+dense zigzag prism:
+  nodes:                         513
+  eligible midpoints:            512
+  maximum eligible area error:  0.192307692315%
+  standalone build time:        37.478564 s
+```
+
+Post-correction gates:
+
+```text
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_dense_topology_cannot_make_area_validation_vacuous -q
+
+1 passed in 40.76s
+
+python -m pytest \
+  tests/cad/test_analytic_measurements.py::\
+test_builds_validated_sphere_geometry_kernel -q
+
+1 passed in 5.53s
+
+python -m pytest tests/cad/test_analytic_measurements.py -q
+
+11 passed in 44.81s
+
+python -m pytest tests/cad/test_analytic_measurements.py tests/geometry -q
+
+63 passed in 57.33s
+```
+
+Focused analytic runtime increased from `7.23s` to `44.81s`, and the combined
+analytic/geometry gate increased from `20.95s` to `57.33s`. The approximately
+37-second increase is the deterministic offline cost of exact B-Rep clipping
+through 513 nodes for the deliberately dense worst-case regression. Runtime
+solver code and legacy physics remain untouched.

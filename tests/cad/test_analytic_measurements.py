@@ -255,6 +255,81 @@ def test_builds_validated_sphere_geometry_kernel() -> None:
     )
 
 
+def test_dense_topology_cannot_make_area_validation_vacuous() -> None:
+    topology_y_mm = np.linspace(0.0, 32.0, 17)
+    half_width_mm = np.where(
+        np.arange(len(topology_y_mm)) % 2 == 0,
+        8.0,
+        12.0,
+    )
+    depth_mm = 5.0
+    right = list(zip(half_width_mm, topology_y_mm, strict=True))
+    left = list(
+        zip(
+            -half_width_mm[::-1],
+            topology_y_mm[::-1],
+            strict=True,
+        )
+    )
+    fluid = (
+        cq.Workplane("XY")
+        .polyline([*right, *left])
+        .close()
+        .extrude(depth_mm)
+        .val()
+    )
+
+    kernel = build_geometry_kernel(
+        fluid,
+        metadata=metadata(0.0, 32.0),
+        max_nodes=1025,
+    )
+
+    validate_geometry_kernel(kernel)
+    assert len(kernel.height_ft) > 33
+    midpoint_height_ft = 0.5 * (
+        kernel.height_ft[:-1] + kernel.height_ft[1:]
+    )
+    midpoint_y_mm = midpoint_height_ft / MM_TO_FT
+    coincidence_tolerance_mm = 1e-8 * 32.0
+    eligible = np.asarray(
+        [
+            np.min(np.abs(topology_y_mm - y_mm))
+            > coincidence_tolerance_mm
+            for y_mm in midpoint_y_mm
+        ]
+    )
+    assert np.any(eligible)
+    direct_area_mm2 = (
+        2.0
+        * depth_mm
+        * np.interp(
+            midpoint_y_mm,
+            topology_y_mm,
+            half_width_mm,
+        )
+    )
+    derivative_area_mm2 = np.asarray(
+        [
+            eval_ppoly_derivative(
+                float(height_ft),
+                kernel.height_ft,
+                kernel.volume_coefficients,
+            )
+            / MM2_TO_FT2
+            for height_ft in midpoint_height_ft
+        ]
+    )
+    maximum_relative_error = np.max(
+        np.abs(
+            derivative_area_mm2[eligible]
+            - direct_area_mm2[eligible]
+        )
+        / direct_area_mm2[eligible]
+    )
+    assert maximum_relative_error <= 2e-3
+
+
 def test_builds_validated_cylinder_geometry_kernel() -> None:
     radius = 17.0
     y_min_mm = -23.0

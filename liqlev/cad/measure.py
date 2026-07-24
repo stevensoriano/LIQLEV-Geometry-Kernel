@@ -340,7 +340,9 @@ def _midpoint_area_masks(
     volume_coefficients: np.ndarray,
     absolute_y_mm: np.ndarray,
     topology_y_mm: np.ndarray,
-    topology_clearance_mm: float,
+    topology_tolerance_mm: float,
+    degenerate_endpoint_y_mm: np.ndarray,
+    degenerate_endpoint_clearance_mm: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     derivative_area = np.asarray(
         [
@@ -352,26 +354,58 @@ def _midpoint_area_masks(
             for height in midpoint_height
         ]
     )
-    topology_neighborhood = np.asarray(
+    topology_coincidence = np.asarray(
         [
             np.min(np.abs(topology_y_mm - absolute_y))
-            <= topology_clearance_mm
+            <= topology_tolerance_mm
             for absolute_y in absolute_y_mm
         ]
     )
+    if len(degenerate_endpoint_y_mm):
+        degenerate_endpoint_neighborhood = np.asarray(
+            [
+                np.min(
+                    np.abs(degenerate_endpoint_y_mm - absolute_y)
+                )
+                <= degenerate_endpoint_clearance_mm
+                for absolute_y in absolute_y_mm
+            ]
+        )
+    else:
+        degenerate_endpoint_neighborhood = np.zeros(
+            len(absolute_y_mm),
+            dtype=bool,
+        )
+    excluded = topology_coincidence | degenerate_endpoint_neighborhood
     positive_area = direct_area > 1e-14 * max(
         1.0,
         float(np.max(direct_area)),
     )
+    eligible = ~excluded & positive_area
     failing = (
-        ~topology_neighborhood
-        & positive_area
+        eligible
         & (
             np.abs(derivative_area - direct_area)
             > _AREA_VALIDATION_RELATIVE_TOLERANCE * direct_area
         )
     )
-    return failing, topology_neighborhood
+    return failing, eligible
+
+
+def _degenerate_endpoint_y_mm(
+    absolute_nodes_mm: np.ndarray,
+    section_area_mm2: np.ndarray,
+) -> np.ndarray:
+    area_scale = max(1.0, float(np.max(section_area_mm2)))
+    endpoint_indices = np.asarray([0, len(absolute_nodes_mm) - 1])
+    degenerate = (
+        section_area_mm2[endpoint_indices]
+        <= 1e-14 * area_scale
+    )
+    return np.ascontiguousarray(
+        absolute_nodes_mm[endpoint_indices][degenerate],
+        dtype=np.float64,
+    )
 
 
 def _adaptive_measurements(
@@ -459,22 +493,40 @@ def _adaptive_measurements(
             )
             > _REFINEMENT_RELATIVE_TOLERANCE * sidewall_scale
         )
-        area_failing, topology_neighborhood = _midpoint_area_masks(
+        degenerate_endpoint_y = _degenerate_endpoint_y_mm(
+            nodes,
+            node_samples.section_area_mm2,
+        )
+        endpoint_clearance_mm = max(
+            tolerance_mm,
+            (y_max_mm - y_min_mm)
+            / (_INITIAL_UNIFORM_NODE_COUNT - 1),
+        )
+        area_failing, area_eligible = _midpoint_area_masks(
             midpoint_samples.height_mm,
             midpoint_samples.section_area_mm2,
             node_samples.height_mm,
             volume_coefficients,
             midpoints,
             topology_y,
-            max(
-                tolerance_mm,
-                (y_max_mm - y_min_mm)
-                / (_INITIAL_UNIFORM_NODE_COUNT - 1),
-            ),
+            tolerance_mm,
+            degenerate_endpoint_y,
+            endpoint_clearance_mm,
         )
+        if not np.any(area_eligible):
+            raise GeometryMeasurementError(
+                "direct area validation has no eligible interval midpoints"
+            )
         failing |= area_failing
         if np.any(area_failing):
-            failing |= topology_neighborhood
+            topology_refinement_neighborhood = np.asarray(
+                [
+                    np.min(np.abs(topology_y - midpoint))
+                    <= endpoint_clearance_mm
+                    for midpoint in midpoints
+                ]
+            )
+            failing |= topology_refinement_neighborhood
         if not np.any(failing):
             return node_samples, topology_y, midpoint_samples
         if len(nodes) + int(np.count_nonzero(failing)) > max_nodes:
@@ -529,13 +581,23 @@ def _validate_measured_kernel(
             "integrated dV/dh disagrees with final volume by more than 0.05%"
         )
 
-    area_failing, _ = _midpoint_area_masks(
+    absolute_nodes_mm = (
+        kernel.height_ft / MM_TO_FT
+        + kernel.metadata.y_min_mm
+    )
+    degenerate_endpoint_y = _degenerate_endpoint_y_mm(
+        absolute_nodes_mm,
+        kernel.section_area_ft2 / MM2_TO_FT2,
+    )
+    area_failing, area_eligible = _midpoint_area_masks(
         midpoint_samples.height_mm * MM_TO_FT,
         midpoint_samples.section_area_mm2 * MM2_TO_FT2,
         kernel.height_ft,
         kernel.volume_coefficients,
         midpoint_samples.height_mm + kernel.metadata.y_min_mm,
         topology_y_mm,
+        tolerance_mm,
+        degenerate_endpoint_y,
         max(
             tolerance_mm,
             (
@@ -545,6 +607,10 @@ def _validate_measured_kernel(
             / (_INITIAL_UNIFORM_NODE_COUNT - 1),
         ),
     )
+    if not np.any(area_eligible):
+        raise GeometryMeasurementError(
+            "direct area validation has no eligible interval midpoints"
+        )
     if np.any(area_failing):
         raise GeometryMeasurementError(
             "direct CAD area and dV/dh disagree by more than 0.2% away "
