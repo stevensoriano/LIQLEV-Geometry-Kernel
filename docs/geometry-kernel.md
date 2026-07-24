@@ -213,8 +213,8 @@ Set `tank.geometry_path` to the NPZ path in a schema-version 2 configuration:
 }
 ```
 
-`diameter_ft` and `height_ft` remain required for configuration-schema
-compatibility but are not used by the custom-geometry solver. The loaded
+`diameter_ft` and `height_ft` are accepted legacy compatibility fields with
+schema defaults; they are ignored by the custom-geometry solver. The loaded
 package supplies total volume, actual height, interface area, perimeter, and
 wetted sidewall area.
 
