@@ -14,7 +14,7 @@ import numpy as np
 
 from liqlev.geometry.jit import invert_monotone_volume
 from liqlev.geometry.schema import GeometryKernel
-from thermo_utils import DensitySat, Psat, Tsat
+from thermo_utils import DensitySat, Psat, Tsat, build_property_table, sli
 
 
 PSI_TO_KPA = 6.89475729
@@ -65,9 +65,28 @@ def build_inputs(
             + 9.424e-8 * tinit**5
         )
     else:
+        # F9: use the same 400-point property table the solver interpolates so
+        # xmlzro / rhol_table equals the intended initial liquid volume.
+        pt_temps, pt_rhol, *_ = build_property_table(
+            fluid, pfinal_psia, pinit_psia
+        )
+        rhol = float(sli(tinit, pt_temps, pt_rhol))
+        # Loud backstop: DensitySat path must stay near the table (catches a
+        # broken table build or a bad initial temperature).
         t_k = tinit / 1.8
         ps_kpa = Psat(fluid, t_k)
-        rhol = DensitySat(fluid, "liquid", ps_kpa) * 0.0624279606
+        rhol_direct = DensitySat(fluid, "liquid", ps_kpa) * 0.0624279606
+        if not math.isfinite(rhol) or rhol <= 0.0:
+            raise ValueError(
+                f"Non-hydrogen liquid density from property table is invalid: "
+                f"table={rhol!r} DensitySat={rhol_direct!r}"
+            )
+        relative = abs(rhol - rhol_direct) / rhol
+        if relative > 1.0e-6:
+            raise ValueError(
+                f"Non-hydrogen liquid density inconsistency: table={rhol!r} "
+                f"DensitySat={rhol_direct!r} relative={relative!r}"
+            )
 
     if geometry is not None:
         volt = geometry.total_volume_ft3

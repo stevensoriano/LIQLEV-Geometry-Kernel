@@ -15,6 +15,7 @@ from liqlev.model.config import FluidConfig, RunControls, SimulationConfig, Tank
 from liqlev.model.parsing import parse_numeric_array
 from liqlev.model.units import convert_from_british, convert_to_british, display_unit
 from liqlev.model.validation import InputValidationError, validate_simulation_config
+from thermo_utils import build_property_table, sli
 from validation.physics_cases import build_case_inputs, epsilon_schedule, get_case
 
 
@@ -75,6 +76,60 @@ def test_build_inputs_matches_validation_case_setup_for_as203() -> None:
             assert actual[key] == pytest.approx(value)
         else:
             assert actual[key] == value
+
+
+def test_lox_builder_density_matches_solver_property_table() -> None:
+    """F9: non-hydrogen xmlzro density must match the solver property table.
+
+    Pre-fix the builder used DensitySat while the solver interpolated a
+    400-point table; the two sources disagree by the table interpolation
+    residual (~9.5e-10 relative for LOX 40 psia). After the fix they share one
+    source so initial liquid volume (xmlzro / rhol_table) equals fill·volt.
+    """
+    fluid = "Oxygen"
+    pinit_psia = 40.0
+    pfinal_psia = 35.0
+    fill_fraction = 0.438286
+    dtank = 1.84
+    htank = 1.806770
+    duration = 60.0
+
+    inputs = build_inputs(
+        fluid=fluid,
+        pinit_psia=pinit_psia,
+        pfinal_psia=pfinal_psia,
+        dtank=dtank,
+        htank=htank,
+        fill_fraction=fill_fraction,
+        duration=duration,
+        delta_t=0.02,
+        vent_rate=0.026212963,
+        neps=0,
+        teps=None,
+        xeps=None,
+        ramp_duration=duration,
+        ramp_target_factor=1.0,
+        nggo=2,
+        tggo=np.array([0.0, duration]),
+        xggo=np.array([0.0, 0.0]),
+    )
+
+    pt_t, pt_rhol, *_ = build_property_table(fluid, pfinal_psia, pinit_psia)
+    rhol_table = float(sli(inputs["Tinit"], pt_t, pt_rhol))
+    ac = 0.7854 * (dtank**2)
+    htzero = fill_fraction * htank
+    rhol_builder = float(inputs["Xmlzro"]) / (htzero * ac)
+
+    # Recorded F9 finding number (builder DensitySat vs table, pre-unification).
+    # After the fix this residual is exactly zero (same source).
+    relative_divergence = abs(rhol_builder - rhol_table) / rhol_table
+    assert rhol_builder == pytest.approx(rhol_table, rel=0.0, abs=1e-14), (
+        f"F9 LOX density divergence: builder={rhol_builder!r} table={rhol_table!r} "
+        f"rel={relative_divergence!r}"
+    )
+    assert float(inputs["Xmlzro"]) / rhol_table == pytest.approx(
+        htzero * ac, rel=0.0, abs=1e-12
+    )
 
 
 def test_safe_gravity_eval_and_validation_errors_are_field_level() -> None:
