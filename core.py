@@ -27,6 +27,11 @@ from liqlev.geometry.jit import (
 from thermo_utils import sli, Tsat, Psat, DensitySat, Cpsat, LHoV, dPdTsat
 
 
+# Standard gravity (ft/s^2). AK1 correlation expects dimensionless standard-g
+# (VBA Ggo); convert physical ggo_ft_s2 at the correlation boundary only.
+STD_GRAVITY_FT_S2 = 32.174
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  NUMBA JIT-COMPILED SOLVER CORE
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -194,7 +199,8 @@ def _solver_loop(
 
         # Boundary layer coefficients
         if rhol != 0:
-            ak1_term = 10.8 * (1 + spacl) * (1 + spacv) * ggo_ft_s2 * (rhol - rhov) / rhol
+            ggo_g = ggo_ft_s2 / STD_GRAVITY_FT_S2       # 32.174
+            ak1_term = 10.8 * (1 + spacl) * (1 + spacv) * ggo_g * (rhol - rhov) / rhol
         else:
             ak1_term = 0.0
         ak1 = 1.089 * (ak1_term ** 0.5) if ak1_term > 0 else 0.0
