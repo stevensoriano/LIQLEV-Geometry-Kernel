@@ -139,8 +139,9 @@ def test_boundary_layer_rejects_invalid_height(top_height: float) -> None:
     assert np.isnan(result[:3]).all()
 
 
-@pytest.mark.parametrize("ak3", [0.0, -0.015])
-def test_boundary_layer_rejects_nonpositive_ak3(ak3: float) -> None:
+@pytest.mark.parametrize("ak3", [-0.015, -1.0, -1e-12])
+def test_boundary_layer_rejects_negative_ak3(ak3: float) -> None:
+    """AUTHORIZED EDIT #1 (plan 2.7c): reject only ak3 < 0; ak3 == 0 is exact."""
     kernel = cylinder_kernel(4.0, 8.0, node_count=17)
     result = integrate_boundary_layer(
         ak3,
@@ -152,6 +153,118 @@ def test_boundary_layer_rejects_nonpositive_ak3(ak3: float) -> None:
     )
     assert result[3] == 1
     assert np.isnan(result[:3]).all()
+
+
+def test_boundary_layer_ak3_zero_is_exact_zero_solution() -> None:
+    """ak3 == 0 => dq/dh = 0 => q = delta = V_BL = 0 with status 0 (plan 2.3/2.7c)."""
+    kernel = cylinder_kernel(4.0, 8.0, node_count=17)
+    delta, vbl, q, status = integrate_boundary_layer(
+        0.0,
+        4.0,
+        kernel.height_ft,
+        kernel.volume_coefficients,
+        kernel.perimeter_ft,
+        4,
+    )
+    assert status == 0
+    assert delta == 0.0
+    assert vbl == 0.0
+    assert q == 0.0
+
+
+def _lox_probe_geometry():
+    """Committed NASA tank at the 43 L fill used in the F2 findings table."""
+    from pathlib import Path
+
+    from liqlev.geometry.jit import (
+        eval_ppoly,
+        eval_ppoly_derivative,
+        interp_linear_nonnegative,
+        invert_monotone_volume,
+    )
+    from liqlev.geometry.package import load_geometry_package
+
+    geom = load_geometry_package(
+        Path(__file__).resolve().parents[2]
+        / "geometry"
+        / "tables"
+        / "nhq01-m21a-0201_LIQLEV_GEOMETRY.npz"
+    )
+    fill_ft3 = 43.0 / 28.316846592
+    top_height = float(
+        invert_monotone_volume(
+            fill_ft3,
+            geom.height_ft,
+            geom.volume_ft3,
+            geom.volume_coefficients,
+        )
+    )
+    area = float(
+        eval_ppoly_derivative(
+            top_height, geom.height_ft, geom.volume_coefficients
+        )
+    )
+    perimeter = float(
+        interp_linear_nonnegative(
+            top_height, geom.height_ft, geom.perimeter_ft
+        )
+    )
+    volume = float(
+        eval_ppoly(top_height, geom.height_ft, geom.volume_coefficients)
+    )
+    return geom, top_height, area, perimeter, volume
+
+
+def test_boundary_layer_saturation_lock_in_at_ak3_1e2() -> None:
+    """Plan 2.7a: AK3 = 1e2 locks δ → A/P (0.999245) with V_BL ≤ V(top)."""
+    from liqlev.geometry.jit import eval_ppoly
+
+    geom, top_height, area, perimeter, volume = _lox_probe_geometry()
+    delta, vbl, q, status = integrate_boundary_layer(
+        1.0e2,
+        top_height,
+        geom.height_ft,
+        geom.volume_coefficients,
+        geom.perimeter_ft,
+        4,
+    )
+    assert status == 0
+    assert area > 0.0 and perimeter > 0.0
+    assert delta / (area / perimeter) >= 0.999
+    # Lock the measured pre-fix saturation ratio (findings table).
+    np.testing.assert_allclose(
+        delta / (area / perimeter), 0.999245, rtol=0.0, atol=5e-6
+    )
+    assert vbl <= volume * (1.0 + 1e-6)
+    assert vbl / volume >= 0.99
+
+
+@pytest.mark.parametrize("ak3", [1.0e3, 1.0e4, 1.0e6])
+def test_boundary_layer_rejects_extreme_ak3_garbage_class(ak3: float) -> None:
+    """Plan 2.7b: documented 3.2×/15×/323× silent-garbage class must not return success-with-garbage.
+
+    Pre-fix: status 0 with V_BL ≫ V. Post-fix: status 1 (self-consistency)
+    or status 0 with physical saturation bounds (δ ≤ A/P, V_BL ≤ V).
+    """
+    geom, top_height, area, perimeter, volume = _lox_probe_geometry()
+    delta, vbl, q, status = integrate_boundary_layer(
+        ak3,
+        top_height,
+        geom.height_ft,
+        geom.volume_coefficients,
+        geom.perimeter_ft,
+        4,
+    )
+    if status == 1:
+        assert np.isnan(delta) and np.isnan(vbl) and np.isnan(q)
+        return
+    assert status == 0
+    assert np.isfinite(delta) and np.isfinite(vbl)
+    assert delta <= (area / perimeter) * (1.0 + 1e-6)
+    assert vbl <= volume * (1.0 + 1e-6)
+    # Extreme AK3 must be at the saturation limit, not a partial/garbage state.
+    assert delta / (area / perimeter) >= 0.99
+    assert vbl / volume >= 0.99
 
 
 @pytest.mark.parametrize("substeps", [0, -1])
