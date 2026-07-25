@@ -4,21 +4,24 @@
 
 - **Determination: FINAL.** For the calibrated LIQLEV lineage, gravity enters the AK1
   correlation as a dimensionless standard-gravity level, not as ft/s^2.
-- **Correction: NOT applied by this document.** This is the plan Phase 0.1 gate
-  deliverable (`docs/2026-07-24-implementation-plan.md` in the capability-review branch of
-  the Spyder project). The code change is plan Phase 1 and is released separately. This
-  document's commit changes no solver code, no test, and no baseline.
+- **Correction: APPLIED (plan Phase 1 / path-forward Step 2).** Solver fix + heritage
+  regression test + physics-baseline regeneration landed on `wt/step2` (see
+  [Applied correction](#applied-correction-plan-phase-1--measured) for measured impact and
+  commit SHAs). Pre-fix adjudication tables below are retained as evidence and labeled
+  **pre-fix**.
 - Determination date: 2026-07-24 (review verification round); recorded and independently
-  re-verified after cluster transfer: 2026-07-25. Author: Steven Soriano.
+  re-verified after cluster transfer: 2026-07-25; Step-2 measured update: 2026-07-25.
+  Author: Steven Soriano.
 - Finding of record: F1 in `docs/2026-07-24-authoritative-review-findings.md`
   (py_files branch `feature/liqlev-capability-review`).
 
 ## The question
 
-`core.py` line 197 (`_solver_loop`, boundary-layer coefficients) evaluates the AK1
-buoyancy correlation with gravity in ft/s^2:
+**Pre-fix** `core.py` line 197 (`_solver_loop`, boundary-layer coefficients) evaluated
+the AK1 buoyancy correlation with gravity in ft/s^2:
 
 ```python
+# PRE-FIX (defective) form at core.py:197
 ak1_term = 10.8 * (1 + spacl) * (1 + spacv) * ggo_ft_s2 * (rhol - rhov) / rhol
 ```
 
@@ -49,18 +52,22 @@ original FORTRAN listing, VBA source, and workbook are unavailable.
 
 ## Empirical adjudication — reproduction of the published AS-203 figure
 
+### Pre-fix adjudication (retained evidence)
+
 Probe `probes/probe_as203_adjudication.py` (py_files review branch) runs the documented
 AS-203 reference case — orbital gravity level 3.0e-4 g, vent rates 3.3069 / 2.2046 /
 1.1023 lbm/s, per `liqlev_heritage.reference_cases` — through three configurations and
-compares peak dimensionless liquid rise `dh/h0` against the published curves:
+compares peak dimensionless liquid rise `dh/h0` against the published curves.
+**Table below is the pre-fix record** (defective kernel ft/s^2 path vs heritage and
+g0-input control).
 
-| Vent, lbm/s | Published peak dh/h0 | Heritage (g0 convention) | Kernel (ft/s^2, as-is) | Kernel, g0-input control |
+| Vent, lbm/s | Published peak dh/h0 | Heritage (g0 convention) | Kernel pre-fix (ft/s^2, as-is) | Kernel, g0-input control (pre-fix preview) |
 |---:|---:|---:|---:|---:|
 | 3.3069 | 0.1350 | 0.137863 (1.021x) | 0.035833 (0.265x) | 0.138265 (1.024x) |
 | 2.2046 | 0.1120 | 0.114431 (1.022x) | 0.026122 (0.233x) | 0.114564 (1.023x) |
 | 1.1023 | 0.0650 | 0.066821 (1.028x) | 0.016289 (0.251x) | 0.066371 (1.021x) |
 
-Three independent facts, one conclusion:
+Three independent facts, one conclusion (pre-fix):
 
 1. The **heritage g0 convention reproduces the published figure within ~2.5%** at all
    three vent rates — inside the heritage acceptance bands (`docs/VALIDATION.md`:
@@ -72,6 +79,9 @@ Three independent facts, one conclusion:
    convention (`Xggo / 32.174`) — also matches published within 2.4%. The units
    convention is therefore the **sole** defect; the modernized solver structure is
    otherwise sound.
+
+Post-fix native kernel measurements (no g0-input hack) are in
+[Applied correction §B](#b-as-203-adjudication-probesprobe_as203_adjudicationpy).
 
 ### Published-data provenance
 
@@ -85,21 +95,24 @@ from slide 16 of Matthew E. Moran, *Liquid Rise During Venting: SpaceX Tanker LO
 Tank*, briefing dated 28 January 2022, which reproduces that figure; the digitized points
 are stored at heritage `data/moran_2022_fig4_14.csv`.
 
-### Mechanism confirmation
+### Mechanism confirmation (pre-fix)
 
 Probe `probes/probe_ak1_units.py`, identical legacy-cylinder inputs at g = 0.001 through
-both implementations:
+both implementations. **Table below is the pre-fix record.**
 
-| Row | heritage AK1 | kernel AK1 | ratio |
+| Row | heritage AK1 | kernel AK1 (pre-fix) | ratio |
 |---:|---:|---:|---:|
 | 0 | 0.22342309 | 1.26730335 | 5.67221 |
 | 1 | 0.22342313 | 1.26730355 | 5.67221 |
 
-The ratio is exactly `sqrt(32.174) = 5.672213`. Downstream on that case: `BL Vap Out`
-+461% (row 0); final `VBL vol` and `BL thick` both −41.3%. AK3 is nearly unchanged
-(ratio 0.95–0.99) because the solver iterates AK3 to close the vapour balance and
-partially compensates — which is why the small low-vent case shows a −41% boundary-layer
-error while the AS-203 published case shows the full ~4x rise error.
+The ratio is exactly `sqrt(32.174) = 5.672213`. Downstream on that case (pre-fix):
+`BL Vap Out` +461% (row 0); final `VBL vol` and `BL thick` both −41.3%. AK3 is nearly
+unchanged (ratio 0.95–0.99) because the solver iterates AK3 to close the vapour balance
+and partially compensates — which is why the small low-vent case shows a −41%
+boundary-layer error while the AS-203 published case shows the full ~4x rise error.
+
+Post-fix pure-AK1 measurements are in
+[Applied correction §A](#a-pure-ak1-unit-probe-probesprobe_ak1_unitspy-g--0001).
 
 ## Why the printed report equation cannot adjudicate
 
@@ -174,26 +187,93 @@ repair, not a change to the heritage AK1 correlation.**
 
 ## Consequence for the committed baseline
 
-`validation/baselines/physics_baseline.json` was generated from the uncorrected
-`core.py`, so it locks in the defective behaviour as the legacy authority;
-`scripts/check_physics_baseline.py` passes today and **cannot detect F1**. When the plan
-Phase 1 fix lands, that baseline must be **deliberately regenerated**
-(`scripts/write_physics_baseline.py`) in its own commit, recorded as a documented physics
-correction — AK1 was 5.672x too large; prior results under-predicted liquid rise — not as
-a regression.
+**Pre-fix:** `validation/baselines/physics_baseline.json` was generated from the
+uncorrected `core.py`, so it locked in the defective behaviour as the legacy authority;
+`scripts/check_physics_baseline.py` could not detect F1.
 
-## Planned correction (plan Phase 1 — pending, not in this commit)
+**Post-fix (Step 2):** the baseline was **deliberately regenerated** via
+`scripts/write_physics_baseline.py` in its own commit (see
+[Applied correction §C](#c-physics-baseline-regeneration)), recorded as a documented
+physics correction — AK1 was 5.672x too large; prior results under-predicted liquid rise
+— not as a regression. `scripts/check_physics_baseline.py` PASSes against the new
+baseline.
 
-Apply the conversion at the correlation boundary in `core.py:197`, mirroring the heritage
-fix exactly (`ggo_g = ggo_ft_s2 / STD_GRAVITY_FT_S2` with module constant
-`STD_GRAVITY_FT_S2 = 32.174`), preceded by a failing heritage-comparison regression test.
-The `Gravity_g` output column (`res[step, 24] = ggo_ft_s2 / 32.174`, `core.py:479`)
-already divides and needs no change. Expected impact: AK1 / 5.672; AK3 x 5.672 (to
-~0.07–0.79 on the LOX case, still well inside the stable integrator regime);
-boundary-layer thickness and volume ≈ +41% on the probed low-vent condition; predicted
-liquid rise increases (the `kernel, g0-input control` column above previews post-fix
-behaviour). Every documented number derived from AK1/AK3/delta/V_BL changes and is swept
-per plan Phase 1.4.
+## Applied correction (plan Phase 1 — measured)
+
+**Code:** `core.py` correlation boundary now uses
+`ggo_g = ggo_ft_s2 / STD_GRAVITY_FT_S2` with
+`STD_GRAVITY_FT_S2 = 32.174` (module constant). Fix+test commit:
+`3f86b920839414a5b4d1640c2fc205dbb7dc9a30`. Baseline regen commit:
+`757dfb4fd7a0cd554450ad5fafc4bbec103552d1`.
+`res[step, 24]` (`Gravity_g`) was already correct and was not changed.
+
+Post-fix form at the correlation boundary:
+
+```python
+# POST-FIX form
+if rhol != 0:
+    ggo_g = ggo_ft_s2 / STD_GRAVITY_FT_S2       # 32.174
+    ak1_term = 10.8 * (1 + spacl) * (1 + spacv) * ggo_g * (rhol - rhov) / rhol
+else:
+    ak1_term = 0.0
+ak1 = 1.089 * (ak1_term ** 0.5) if ak1_term > 0 else 0.0
+```
+
+Permanent regression: `tests/geometry/test_ak1_heritage_units.py` (vendored heritage
+`boundary_layer_ak1`; RED pre-fix at ratio 5.672213, GREEN post-fix at rel ≤ 1e-9).
+
+### Pre-fix vs post-fix (same pin: py 3.13.5 / numpy 2.3.4 / numba 0.64.0)
+
+#### A. Pure AK1 unit probe (`probes/probe_ak1_units.py`, g = 0.001)
+
+| Row | pre-fix kernel AK1 | post-fix kernel AK1 | heritage AK1 | ratio pre/post |
+|---:|---:|---:|---:|---:|
+| 0 | 1.26730335 | **0.22342309** | 0.22342309 | F = 5.672213 |
+| 1 | 1.26730355 | **0.22342313** | 0.22342313 | F |
+
+Kernel/heritage AK1 ratio post-fix = **1.000000** (to printed digits).
+
+| Quantity | pre-fix kernel | post-fix kernel | heritage |
+|---|---:|---:|---:|
+| BL Vap Out (row 0) | 2.2517e-05 | **4.01717542e-06** | 4.01347387e-06 |
+| VBL vol (final) | 4.3274e-01 | **7.26554521e-01** | 7.37097184e-01 |
+| BL thick (final) | 1.0025e-03 | **1.68313304e-03** | 1.70755151e-03 |
+| AK3 (row 0 ratio k/h) | ~0.95–0.99× heritage | **1.00092×** heritage | — |
+
+#### B. AS-203 adjudication (`probes/probe_as203_adjudication.py`)
+
+Post-fix native kernel column (exit gate: within ~2.5% of published, matching former
+control column):
+
+| Vent, lbm/s | Published | pre-fix kernel | post-fix kernel | heritage |
+|---:|---:|---:|---:|---:|
+| 3.3069 | 0.1350 | 0.035833 (0.265×) | **0.138265 (1.024×)** | 0.137863 |
+| 2.2046 | 0.1120 | 0.026122 (0.233×) | **0.114564 (1.023×)** | 0.114431 |
+| 1.1023 | 0.0650 | 0.016289 (0.251×) | **0.066371 (1.021×)** | 0.066821 |
+
+All three post-fix kern/pub ratios fall in **1.021–1.024**, inside the ~2.5% band and
+matching the pre-fix g0-input control column exactly (to printed digits).
+
+#### C. Physics baseline regeneration
+
+- Command: `python scripts/write_physics_baseline.py` (pinned env); verified by
+  `scripts/check_physics_baseline.py` (PASS).
+- Pre-fix summary anchors (defective):
+  - as203_default_high_vent `max_dh_h0` = 0.13461627071131826
+  - hydrogen_height_dep_mid_fill `max_dh_h0` = 0.00018668091840282378
+  - nitrogen_custom_epsilon `max_dh_h0` = 0.0024743887496442418
+- Post-fix summary (regenerated):
+  - as203_default_high_vent `max_dh_h0` = **0.2619626166693403** (`final_height_ft` 18.193573704708815)
+  - hydrogen_height_dep_mid_fill `max_dh_h0` = **0.0003463253782541249** (`final_height_ft` 14.0948797245796)
+  - nitrogen_custom_epsilon `max_dh_h0` = **0.007927313661292758** (`final_height_ft` 4.535672911475817)
+- Direction of record: prior AK1 was 5.672× too large; prior results under-predicted
+  liquid rise. Baseline regen is a deliberate physics correction, not a regression.
+
+#### D. LOX case AK3 band (plan projection)
+
+- Pre-fix projection language: AK3 × 5.672 → ~0.07–0.79 on LOX.
+- Measured post-fix LOX AK3 min/max: **not measured in Step 2** (deferred to LOX flight
+  case / plan Phase 3 matrix when run).
 
 ## Independent re-verification after cluster transfer (2026-07-25)
 
