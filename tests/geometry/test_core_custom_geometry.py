@@ -224,16 +224,79 @@ def test_custom_geometry_rejects_non_float64_arrays_before_jit() -> None:
 
 
 def test_boundary_layer_failure_writes_one_bounded_diagnostic_row() -> None:
+    """AUTHORIZED EDIT #2 (plan 2.7e): re-point BL-failure diagnostic trigger.
+
+    Pre-Phase-2 this used custom g=0, which forced integrate_boundary_layer to
+    reject ak3==0. Phase 2 makes g=0 the physical saturation limit (succeeds by
+    design). Re-point to a still-valid BL failure: zero perimeter makes the
+    section undefined for a non-zero BL state and yields integration_status != 0
+    through the solver. Same assertions: one bounded diagnostic row, Conv Failed.
+    """
     fill = 0.5
-    result = liqlev_simulation(
-        _custom_cylinder_inputs(fill, gravity_g=0.0),
-        verbose=False,
+    inputs = _custom_cylinder_inputs(fill, gravity_g=0.001)
+    inputs["GeomPerimeter"] = np.zeros_like(
+        np.asarray(inputs["GeomPerimeter"], dtype=np.float64)
     )
+    result = liqlev_simulation(inputs, verbose=False)
 
     assert len(result) == 1
     assert result.loc[0, "Conv Failed"] == 1.0
     assert result.loc[0, "Height"] == pytest.approx(fill * TANK_HEIGHT_FT)
     assert 0.0 <= result.loc[0, "Height"] <= TANK_HEIGHT_FT
+
+
+def test_custom_zero_g_multi_step_transient_saturates() -> None:
+    """Plan 2.7d: bounded multi-step CUSTOM transient at exactly g = 0.
+
+    Must complete fast (well under 60 s), produce more than one row, never abort,
+    keep vapour exit ~ 0, and stay inside the physical saturation bounds
+    (δ ≤ A/P, V_BL ≤ V(h)) while swelling grows under a moderate vent. Full
+    δ/(A/P)→1 is the high-AK3 integrator property (2.7a); here the vapour-balance
+    root at AK1==0 is demand-limited and walks toward that bound.
+    """
+    fill = 0.5
+    dt = 1.0
+    duration = 15.0
+    vent = 0.05  # lbm/s: measurable BL growth without abort in this window
+    inputs = _custom_cylinder_inputs(fill, gravity_g=0.0)
+    time = np.array([0.0, duration], dtype=np.float64)
+    ones = np.ones(2, dtype=np.float64)
+    inputs["Delta"] = dt
+    inputs["Tvmdot"] = time
+    inputs["Xvmdot"] = np.full(2, vent, dtype=np.float64)
+    inputs["Tspal"] = time
+    inputs["Xspacl"] = ones
+    inputs["Tspav"] = time
+    inputs["Xspacv"] = ones
+    inputs["Tggo"] = time
+    inputs["Xggo"] = np.zeros(2, dtype=np.float64)
+
+    result = liqlev_simulation(inputs, verbose=False)
+
+    assert len(result) > 1
+    assert (result["Conv Failed"] == 0.0).all()
+    # Zero exit flow at g = 0 (AK1 = 0); residual numerical noise only.
+    assert (np.abs(result["BL Vap Out"].to_numpy(dtype=float)) <= 1.0e-12).all()
+
+    area = np.pi * GEOMETRY_DIAMETER_FT**2 / 4.0
+    perimeter = np.pi * GEOMETRY_DIAMETER_FT
+    a_over_p = area / perimeter
+    heights = result["Height"].to_numpy(dtype=float)
+    deltas = result["BL thick"].to_numpy(dtype=float)
+    vbls = result["VBL vol"].to_numpy(dtype=float)
+    v_of_h = area * heights
+
+    # Physical section/volume bounds (F2 saturation limit is an upper envelope).
+    assert (deltas >= 0.0).all()
+    assert (deltas <= a_over_p * (1.0 + 1e-6)).all()
+    assert (vbls >= 0.0).all()
+    assert (vbls <= v_of_h * (1.0 + 1e-6)).all()
+    # Positive-AK3 path is active: swelling grows along the transient.
+    assert deltas[-1] > deltas[0]
+    assert vbls[-1] > vbls[0]
+    assert deltas[-1] / a_over_p >= 0.05
+    assert (result["AK1"].to_numpy(dtype=float) == 0.0).all()
+    assert (result["AK3"].to_numpy(dtype=float) > 0.0).all()
 
 
 def test_volume_inversion_failure_writes_one_bounded_diagnostic_row() -> None:

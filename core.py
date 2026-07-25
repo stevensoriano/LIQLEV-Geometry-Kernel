@@ -205,7 +205,15 @@ def _solver_loop(
             ak1_term = 0.0
         ak1 = 1.089 * (ak1_term ** 0.5) if ak1_term > 0 else 0.0
         ak2 = -eps * cs * rhol * dtdps * dpdtha / rhov / hfg if rhov * hfg != 0 else 0.0
-        ak3 = ak2 / ak1 if ak1 != 0 else 0.0
+        # At ak1 == 0 the physical limit is ak3 → ∞, not 0. CUSTOM mode seeds a
+        # positive bracket start so the vapour-balance root at zero exit flow can
+        # be found; legacy keeps ak3 = 0.0 byte-identical (baseline-locked).
+        if ak1 != 0.0:
+            ak3 = ak2 / ak1
+        elif geometry_mode == 1:
+            ak3 = hldak3 if hldak3 > 0.0 else 1.0
+        else:
+            ak3 = 0.0
 
         # ── Boundary layer volume solver (Secant + Newton-Raphson) ──
         nconv = 0
@@ -345,7 +353,12 @@ def _solver_loop(
                 elif have_positive:
                     ak3 = positive_ak3 * 0.5
                 else:
-                    ak3 = negative_ak3 * 2.0
+                    # positive floor: negative_ak3 == 0 was a no-op (*2) that
+                    # burned all 80 bracket iterations without moving.
+                    if negative_ak3 == 0.0:
+                        ak3 = 1.0
+                    else:
+                        ak3 = negative_ak3 * 2.0
             else:
                 if nconv <= 1:
                     if nconv == 0:
