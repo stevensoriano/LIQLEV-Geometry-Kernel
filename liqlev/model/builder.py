@@ -43,8 +43,15 @@ def build_inputs(
     xmlzro_override: float | None = None,
     tinit_override: float | None = None,
     geometry: GeometryKernel | None = None,
+    boundary_layer_substeps: int | None = None,
 ) -> dict[str, Any]:
-    """Build the input dictionary consumed by ``core.liqlev_simulation``."""
+    """Build the input dictionary consumed by ``core.liqlev_simulation``.
+
+    ``boundary_layer_substeps`` (optional): when provided, written as
+    ``BLSubsteps`` for the solver. Omitted when ``None`` so callers that
+    compare against legacy ``physics_cases.build_case_inputs`` key sets stay
+    byte-compatible; ``liqlev_simulation`` defaults missing keys to 4 (F7).
+    """
     volt = (np.pi / 4) * (dtank**2) * htank
     ac = 0.7854 * (dtank**2)
     htzero = fill_fraction * htank
@@ -170,6 +177,20 @@ def build_inputs(
                 "GeomSidewallCoefficients": geometry.sidewall_coefficients,
             }
         )
+    if boundary_layer_substeps is not None:
+        if type(boundary_layer_substeps) is not int or isinstance(
+            boundary_layer_substeps, bool
+        ):
+            raise ValueError(
+                "boundary_layer_substeps must be a positive integer "
+                f"(got {boundary_layer_substeps!r})"
+            )
+        if boundary_layer_substeps <= 0:
+            raise ValueError(
+                "boundary_layer_substeps must be a positive integer "
+                f"(got {boundary_layer_substeps!r})"
+            )
+        inputs["BLSubsteps"] = boundary_layer_substeps
     return inputs
 
 

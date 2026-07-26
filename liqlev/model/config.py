@@ -56,6 +56,9 @@ class RunControls:
     duration_s: float = 400.0
     timestep_s: float = 10.0
     threshold_dh_h0: float | None = None
+    # Fixed RK4 substeps per boundary-layer interval (custom geometry mode).
+    # Default 4 matches the historical hard-coded core.py literal (finding F7).
+    boundary_layer_substeps: int = 4
 
 
 @dataclass(frozen=True)

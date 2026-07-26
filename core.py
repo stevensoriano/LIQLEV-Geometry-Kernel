@@ -88,6 +88,7 @@ def _solver_loop(
     geom_perimeter,
     geom_sidewall_area,
     geom_sidewall_coefficients,
+    bl_substeps,
 ):
     """JIT-compiled inner solver loop.
 
@@ -251,7 +252,7 @@ def _solver_loop(
                     geom_height,
                     geom_volume_coefficients,
                     geom_perimeter,
-                    4,
+                    bl_substeps,
                 )
                 if integration_status != 0:
                     custom_failure = True
@@ -672,6 +673,19 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
     if geometry_mode not in (0, 1):
         raise ValueError("GeometryMode must be 0 (legacy) or 1 (custom)")
 
+    # F7: configurable RK4 substeps for boundary-layer integration (default 4).
+    bl_substeps_raw = inputs.get('blsubsteps', 4)
+    try:
+        bl_substeps = int(bl_substeps_raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"BLSubsteps must be a positive integer (got {bl_substeps_raw!r})"
+        ) from exc
+    if isinstance(bl_substeps_raw, bool) or bl_substeps <= 0:
+        raise ValueError(
+            f"BLSubsteps must be a positive integer (got {bl_substeps_raw!r})"
+        )
+
     if units == "SI":
         dtank = inputs['dtank'] * 3.28
         htzero = inputs['htzero'] * 3.28
@@ -848,6 +862,7 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
         geom_perimeter,
         geom_sidewall_area,
         geom_sidewall_coefficients,
+        bl_substeps,
     )
 
     elapsed = _time.perf_counter() - _wall_start

@@ -175,6 +175,23 @@ def validate_simulation_config(config: SimulationConfig) -> GeometryKernel | Non
             )
         )
 
+    # F7: BL RK4 substep count must be a positive integer (default 4).
+    bl_substeps = config.run.boundary_layer_substeps
+    if type(bl_substeps) is not int or isinstance(bl_substeps, bool):
+        issues.append(
+            ValidationIssue(
+                "run.boundary_layer_substeps",
+                "Boundary-layer RK4 substeps must be a positive integer.",
+            )
+        )
+    elif bl_substeps <= 0:
+        issues.append(
+            ValidationIssue(
+                "run.boundary_layer_substeps",
+                "Boundary-layer RK4 substeps must be a positive integer.",
+            )
+        )
+
     if issues:
         raise InputValidationError(issues)
     return geometry

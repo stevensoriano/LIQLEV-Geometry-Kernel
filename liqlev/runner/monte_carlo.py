@@ -107,6 +107,7 @@ def run_monte_carlo(
             tggo=tggo,
             xggo=xggo,
             geometry=geometry,
+            boundary_layer_substeps=config.run.boundary_layer_substeps,
         )
 
         dataframe = liqlev_simulation(inputs, verbose=False, prop_table=prop_table)
