@@ -137,6 +137,9 @@ def test_lox_vent_manifest_hash_binding_and_clean_write(
         conv_failed_total=0,
         ullage_closure_max_relative=0.01,
         finite=True,
+        ullage_closure_within_tolerance=True,
+        physical=True,
+        failure_classifications=(),
     )
     target = tmp_path / "lox_vent_manifest.json"
     payload = write_lox_vent_manifest({"G3": summary}, target)

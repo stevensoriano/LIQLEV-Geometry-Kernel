@@ -3,11 +3,14 @@
 Case constants are pinned by
 ``docs/2026-07-24-lox-vent-test-definition.md`` §1–§3 (and the Step-4
 reference). This module provides the config builder, a bounded runner that
-returns a summary (including the measured ullage-closure metric), and an
-F8-hardened result-manifest writer.
+returns a summary (including the ullage-closure metric and Phase 4.1
+threshold verdict), and an F8-hardened result-manifest writer.
 
-Production G0–G4 matrix runs and the full 60 s blowdown re-verification belong
-to follow-on run engineers — tests here use short schedules only.
+Phase 4.1 wires ``ULLAGE_CLOSURE_RELATIVE_TOLERANCE`` (5%) through
+``ullage_mass_is_acceptable`` / ``assess_lox_dataframe_physicality`` into
+``LoxVentSummary`` (``ullage_closure_within_tolerance``, ``physical``,
+``failure_classifications``). The residual itself is computed only by
+``ullage_closure_metric``.
 """
 
 from __future__ import annotations
@@ -78,6 +81,11 @@ GRAVITY_MATRIX: dict[str, float] = {
     "G4": G4,
 }
 
+# Plan Phase 4.1 / finding F4 — approved 5% ullage-closure acceptance gate.
+# Do not relax; G0 (~5.25%) is a real bad case that must fire.
+ULLAGE_CLOSURE_RELATIVE_TOLERANCE = 0.05
+ULLAGE_MASS_CLOSURE_CLASSIFICATION = "ullage_mass_closure"
+
 
 @dataclass(frozen=True)
 class LoxVentSummary:
@@ -98,6 +106,10 @@ class LoxVentSummary:
     conv_failed_total: int
     ullage_closure_max_relative: float
     finite: bool
+    # Phase 4.1 threshold verdict + physicality (wired to the one metric impl).
+    ullage_closure_within_tolerance: bool
+    physical: bool
+    failure_classifications: tuple[str, ...]
 
 
 def sha256_file(path: str | Path) -> str:
@@ -148,10 +160,13 @@ def build_lox_vent_config(
 
 
 def ullage_closure_metric(dataframe: pd.DataFrame) -> float:
-    """Max relative ullage closure residual (measured, not an acceptance gate).
+    """Max relative ullage closure residual (the single measurement implementation).
 
     Pairing is deliberate: ``Ullage Mass[k]`` vs ``Ullage from Calc[k+1]``
     because the volumetric estimate is computed from start-of-step state.
+    Phase 4.1 wires the 5% threshold verdict via
+    :func:`ullage_mass_is_acceptable` / :func:`assess_lox_dataframe_physicality`
+    against this metric — do not reimplement the residual elsewhere.
     """
 
     if dataframe.empty or len(dataframe) < 2:
@@ -173,6 +188,69 @@ def ullage_closure_metric(dataframe: pd.DataFrame) -> float:
     return float(np.nanmax(relative))
 
 
+def ullage_mass_is_acceptable(dataframe: pd.DataFrame) -> bool:
+    """Acceptance predicate for ullage mass positivity and 5% closure.
+
+    Requires ``(Ullage Mass > 0).all()`` and
+    ``ullage_closure_metric(df) <= ULLAGE_CLOSURE_RELATIVE_TOLERANCE``.
+    Shared by the LOX physicality path and NASA ``_dataframe_is_physical``.
+    """
+
+    if dataframe.empty:
+        return False
+    if "Ullage Mass" not in dataframe.columns:
+        return False
+    ullage = dataframe["Ullage Mass"].to_numpy(dtype=float)
+    if not np.isfinite(ullage).all():
+        return False
+    if not bool((ullage > 0.0).all()):
+        return False
+    if len(dataframe) < 2:
+        # Single-row frames cannot form a closure residual; positivity alone.
+        return True
+    closure = ullage_closure_metric(dataframe)
+    return bool(
+        np.isfinite(closure) and closure <= ULLAGE_CLOSURE_RELATIVE_TOLERANCE
+    )
+
+
+def assess_lox_dataframe_physicality(
+    dataframe: pd.DataFrame,
+    *,
+    total_height_ft: float = TANK_TOTAL_HEIGHT_FT,
+) -> tuple[bool, tuple[str, ...]]:
+    """LOX live-path physicality + classifications (production validation entry).
+
+    Returns ``(physical, failure_classifications)``. Ullage failures surface as
+    the distinct classification ``ullage_mass_closure``; other bound/finiteness
+    failures use ``physical_bounds``. Drives the same ullage predicate the NASA
+    path imports — no reimplementation of the residual metric.
+    """
+
+    classifications: list[str] = []
+    if dataframe.empty:
+        return False, ("physical_bounds", ULLAGE_MASS_CLOSURE_CLASSIFICATION)
+
+    numeric = dataframe.to_numpy(dtype=float)
+    base_ok = bool(
+        np.isfinite(numeric).all()
+        and "Height" in dataframe.columns
+        and "VBL vol" in dataframe.columns
+        and "BL thick" in dataframe.columns
+        and (dataframe["Height"] >= 0.0).all()
+        and (dataframe["Height"] <= total_height_ft).all()
+        and (dataframe["VBL vol"] >= 0.0).all()
+        and (dataframe["BL thick"] >= 0.0).all()
+    )
+    if not base_ok:
+        classifications.append("physical_bounds")
+
+    if not ullage_mass_is_acceptable(dataframe):
+        classifications.append(ULLAGE_MASS_CLOSURE_CLASSIFICATION)
+
+    return (len(classifications) == 0, tuple(classifications))
+
+
 def summarize_lox_vent_result(
     result: SingleCaseResult,
     *,
@@ -183,6 +261,7 @@ def summarize_lox_vent_result(
 
     dataframe = result.dataframe
     if dataframe.empty:
+        physical, classifications = assess_lox_dataframe_physicality(dataframe)
         return LoxVentSummary(
             gravity_g=float(gravity_g),
             timestep_s=float(timestep_s),
@@ -199,6 +278,9 @@ def summarize_lox_vent_result(
             conv_failed_total=0,
             ullage_closure_max_relative=float("nan"),
             finite=True,
+            ullage_closure_within_tolerance=False,
+            physical=physical,
+            failure_classifications=classifications,
         )
 
     height = dataframe["Height"].to_numpy(dtype=float)
@@ -211,6 +293,12 @@ def summarize_lox_vent_result(
         else 0
     )
     values = dataframe.to_numpy(dtype=float)
+    closure = ullage_closure_metric(dataframe)
+    physical, classifications = assess_lox_dataframe_physicality(dataframe)
+    # Threshold verdict shares the same metric; do not re-derive residual.
+    within = bool(
+        np.isfinite(closure) and closure <= ULLAGE_CLOSURE_RELATIVE_TOLERANCE
+    )
     return LoxVentSummary(
         gravity_g=float(gravity_g),
         timestep_s=float(timestep_s),
@@ -225,8 +313,11 @@ def summarize_lox_vent_result(
         final_bl_thick_ft=float(dataframe["BL thick"].iloc[-1]),
         max_ak3=float(dataframe["AK3"].max()),
         conv_failed_total=conv_failed,
-        ullage_closure_max_relative=ullage_closure_metric(dataframe),
+        ullage_closure_max_relative=closure,
         finite=bool(np.isfinite(values).all()),
+        ullage_closure_within_tolerance=within,
+        physical=physical,
+        failure_classifications=classifications,
     )
 
 
@@ -290,7 +381,11 @@ def _summary_manifest(summary: LoxVentSummary) -> dict[str, float | int | bool |
         "ullage_closure_max_relative": _finite_or_none(
             summary.ullage_closure_max_relative
         ),
+        "ullage_closure_within_tolerance": summary.ullage_closure_within_tolerance,
+        "ullage_closure_relative_tolerance": ULLAGE_CLOSURE_RELATIVE_TOLERANCE,
         "finite": summary.finite,
+        "physical": summary.physical,
+        "failure_classifications": list(summary.failure_classifications),
     }
 
 

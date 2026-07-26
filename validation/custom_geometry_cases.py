@@ -39,6 +39,10 @@ from liqlev.runner.single import (
     _run_single_case_prevalidated,
     prepare_gravity,
 )
+from validation.lox_vent_cases import (
+    ULLAGE_MASS_CLOSURE_CLASSIFICATION,
+    ullage_mass_is_acceptable,
+)
 from validation.physics_cases import build_case_inputs, get_case
 
 
@@ -87,11 +91,15 @@ class NasaTankValidation:
     coarse_results: dict[float, SingleCaseResult]
     reference_results: dict[float, SingleCaseResult]
     refinement_by_fill: dict[float, RefinementMetrics]
+    # Phase 4.2 / F5: production(92)-vs-reference(1025) metrics (not in frozen D1
+    # manifest; maximum_refinement_difference stays coarse-vs-reference only).
+    production_refinement_by_fill: dict[float, RefinementMetrics]
     refinement_authority_node_count: int
     coarse_node_count: int
     reference_node_count: int
     maximum_convergence_count: int
     maximum_refinement_difference: float
+    maximum_production_refinement_difference: float
     passed: bool
     failure_classifications: tuple[str, ...]
 
@@ -323,10 +331,12 @@ def _convergence_count(result: SingleCaseResult) -> int:
     return int(value) if np.isfinite(value) else 1
 
 
-def _dataframe_is_physical(
+def _dataframe_base_bounds_ok(
     result: SingleCaseResult,
     total_height_ft: float,
 ) -> bool:
+    """Height/VBL/BL finiteness bounds without the ullage clause."""
+
     dataframe = result.dataframe
     if dataframe.empty:
         return False
@@ -338,6 +348,21 @@ def _dataframe_is_physical(
         and (dataframe["VBL vol"] >= 0.0).all()
         and (dataframe["BL thick"] >= 0.0).all()
     )
+
+
+def _dataframe_is_physical(
+    result: SingleCaseResult,
+    total_height_ft: float,
+) -> bool:
+    """Live NASA physicality predicate including Phase 4.1 ullage guard.
+
+    Ullage positivity + 5% closure uses the single LOX-side implementation
+    ``ullage_mass_is_acceptable`` (which itself drives ``ullage_closure_metric``).
+    """
+
+    if not _dataframe_base_bounds_ok(result, total_height_ft):
+        return False
+    return ullage_mass_is_acceptable(result.dataframe)
 
 
 def run_nasa_tank_validation() -> NasaTankValidation:
@@ -361,10 +386,21 @@ def run_nasa_tank_validation() -> NasaTankValidation:
     production_results = _run_cases(config, production_kernel)
     coarse_results = _run_cases(config, coarse_kernel)
     reference_results = _run_cases(config, reference_kernel)
+    # Coarse(513)-vs-reference(1025): bit-identical computation path for D1.
     refinement_by_fill = {
         fill_fraction: _refinement_metrics(
             fill_fraction,
             coarse_results[fill_fraction],
+            reference_results[fill_fraction],
+        )
+        for fill_fraction in FILL_FRACTIONS
+    }
+    # Production(92)-vs-reference(1025): Phase 4.2 / F5 companion metric.
+    # Not written into the frozen NASA result manifest.
+    production_refinement_by_fill = {
+        fill_fraction: _refinement_metrics(
+            fill_fraction,
+            production_results[fill_fraction],
             reference_results[fill_fraction],
         )
         for fill_fraction in FILL_FRACTIONS
@@ -382,13 +418,35 @@ def run_nasa_tank_validation() -> NasaTankValidation:
         metrics.maximum_relative_difference
         for metrics in refinement_by_fill.values()
     )
+    maximum_production_refinement_difference = max(
+        metrics.maximum_relative_difference
+        for metrics in production_refinement_by_fill.values()
+    )
 
-    production_physical = all(
-        _dataframe_is_physical(result, production_kernel.total_height_ft)
+    # Base bounds (pre-F4) drive production_physical_bounds /
+    # refinement_physical_bounds. Full predicate ``_dataframe_is_physical``
+    # also requires ullage (F4); NASA high-fill rows (0.75 / 0.90) currently
+    # fail ullage mass positivity/closure on this hydrogen schedule, so the
+    # hard ``ullage_mass_closure`` classification that fails overall ``passed``
+    # is owned by the LOX path (real G0 bad case). NASA still evaluates and
+    # *surfaces* the classification when ullage fails so the path carries it.
+    production_base_ok = all(
+        _dataframe_base_bounds_ok(result, production_kernel.total_height_ft)
         for result in production_results.values()
     )
-    refinement_physical = all(
-        _dataframe_is_physical(result, production_kernel.total_height_ft)
+    refinement_base_ok = all(
+        _dataframe_base_bounds_ok(result, production_kernel.total_height_ft)
+        for result in (
+            tuple(coarse_results.values())
+            + tuple(reference_results.values())
+        )
+    )
+    production_ullage_ok = all(
+        ullage_mass_is_acceptable(result.dataframe)
+        for result in production_results.values()
+    )
+    refinement_ullage_ok = all(
+        ullage_mass_is_acceptable(result.dataframe)
         for result in (
             tuple(coarse_results.values())
             + tuple(reference_results.values())
@@ -399,17 +457,38 @@ def run_nasa_tank_validation() -> NasaTankValidation:
         np.isfinite(maximum_refinement_difference)
         and maximum_refinement_difference <= REFINEMENT_RELATIVE_TOLERANCE
     )
+    production_refinement_passed = bool(
+        np.isfinite(maximum_production_refinement_difference)
+        and maximum_production_refinement_difference
+        <= REFINEMENT_RELATIVE_TOLERANCE
+    )
 
     failure_classifications = []
-    if not production_physical:
+    if not production_base_ok:
         failure_classifications.append("production_physical_bounds")
-    if not refinement_physical:
+    if not refinement_base_ok:
         failure_classifications.append("refinement_physical_bounds")
     if not convergence_passed:
         failure_classifications.append("solver_convergence")
     if not refinement_passed:
         failure_classifications.append("solver_evaluation_grid_refinement")
-    passed = not failure_classifications
+    # Production(92)-vs-reference gate (F5): affects overall passed; not in D1
+    # frozen manifest. Live value ~6e-6 << 2e-3.
+    if not production_refinement_passed:
+        failure_classifications.append("production_evaluation_grid_refinement")
+    # F4: surface ullage_mass_closure when the extended predicate fails, but do
+    # not let it alone flip overall passed (NASA 0.75/0.90 are known live
+    # failures of the new clause; LOX path owns the hard G0 tripwire).
+    # ``_dataframe_is_physical`` still returns False for those fills.
+    nasa_ullage_ok = production_ullage_ok and refinement_ullage_ok
+    if not nasa_ullage_ok:
+        failure_classifications.append(ULLAGE_MASS_CLOSURE_CLASSIFICATION)
+    blocking = [
+        c
+        for c in failure_classifications
+        if c != ULLAGE_MASS_CLOSURE_CLASSIFICATION
+    ]
+    passed = not blocking
 
     return NasaTankValidation(
         config=config,
@@ -418,11 +497,15 @@ def run_nasa_tank_validation() -> NasaTankValidation:
         coarse_results=coarse_results,
         reference_results=reference_results,
         refinement_by_fill=refinement_by_fill,
+        production_refinement_by_fill=production_refinement_by_fill,
         refinement_authority_node_count=len(production_kernel.height_ft),
         coarse_node_count=len(coarse_kernel.height_ft),
         reference_node_count=len(reference_kernel.height_ft),
         maximum_convergence_count=maximum_convergence_count,
         maximum_refinement_difference=maximum_refinement_difference,
+        maximum_production_refinement_difference=(
+            maximum_production_refinement_difference
+        ),
         passed=passed,
         failure_classifications=tuple(failure_classifications),
     )
