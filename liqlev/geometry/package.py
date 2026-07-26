@@ -8,7 +8,12 @@ from zipfile import BadZipFile
 
 import numpy as np
 
-from .schema import GeometryKernel, GeometryMetadata
+from .schema import (
+    SUPPORTED_GEOMETRY_SCHEMA_VERSIONS,
+    V1_MIGRATED_AUDIT_STATUS,
+    GeometryKernel,
+    GeometryMetadata,
+)
 
 
 class GeometryPackageError(ValueError):
@@ -34,9 +39,96 @@ def _float64_contiguous(name: str, value: np.ndarray) -> np.ndarray:
     return array
 
 
+def _coerce_tolerances(value: object) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise GeometryPackageError("tolerances must be an object or null")
+    coerced: dict[str, float] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str):
+            raise GeometryPackageError("tolerances keys must be strings")
+        try:
+            numeric = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise GeometryPackageError(
+                f"tolerances[{key!r}] must be numeric"
+            ) from exc
+        if not np.isfinite(numeric):
+            raise GeometryPackageError(f"tolerances[{key!r}] must be finite")
+        coerced[key] = numeric
+    return coerced
+
+
+def _metadata_from_payload(payload: dict[str, object]) -> GeometryMetadata:
+    """Build GeometryMetadata, migrating on-disk v1 to v2-shaped in memory (F12)."""
+
+    version = payload.get("schema_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise GeometryPackageError("schema_version must be an integer")
+    if version not in SUPPORTED_GEOMETRY_SCHEMA_VERSIONS:
+        raise GeometryPackageError(
+            f"unsupported geometry schema_version {version}; "
+            f"supported versions are 1 and 2"
+        )
+
+    required = (
+        "geometry_id",
+        "source_step_sha256",
+        "fluid_step_sha256",
+        "axis",
+        "gravity_direction",
+        "length_unit",
+        "area_unit",
+        "volume_unit",
+        "y_min_mm",
+        "y_max_mm",
+    )
+    missing = [name for name in required if name not in payload]
+    if missing:
+        raise GeometryPackageError(
+            f"geometry metadata fields are invalid: missing {', '.join(missing)}"
+        )
+
+    if version == 1:
+        # In-memory migration only — committed v1 JSON/NPZ/CSV stay byte-identical.
+        tolerances: dict[str, float] | None = None
+        audit_status = V1_MIGRATED_AUDIT_STATUS
+    else:
+        tolerances = _coerce_tolerances(payload.get("tolerances"))
+        audit_raw = payload.get("audit_status", V1_MIGRATED_AUDIT_STATUS)
+        if not isinstance(audit_raw, str):
+            raise GeometryPackageError("audit_status must be a string")
+        audit_status = audit_raw
+
+    try:
+        return GeometryMetadata(
+            schema_version=version,
+            geometry_id=str(payload["geometry_id"]),
+            source_step_sha256=str(payload["source_step_sha256"]),
+            fluid_step_sha256=str(payload["fluid_step_sha256"]),
+            axis=str(payload["axis"]),
+            gravity_direction=str(payload["gravity_direction"]),
+            length_unit=str(payload["length_unit"]),
+            area_unit=str(payload["area_unit"]),
+            volume_unit=str(payload["volume_unit"]),
+            y_min_mm=float(payload["y_min_mm"]),  # type: ignore[arg-type]
+            y_max_mm=float(payload["y_max_mm"]),  # type: ignore[arg-type]
+            tolerances=tolerances,
+            audit_status=audit_status,
+        )
+    except (TypeError, ValueError) as exc:
+        raise GeometryPackageError(
+            f"geometry metadata fields are invalid: {exc}"
+        ) from exc
+
+
 def validate_geometry_kernel(kernel: GeometryKernel) -> None:
-    if kernel.metadata.schema_version != 1:
-        raise GeometryPackageError("schema_version must equal 1")
+    if kernel.metadata.schema_version not in SUPPORTED_GEOMETRY_SCHEMA_VERSIONS:
+        raise GeometryPackageError(
+            f"schema_version must be 1 or 2 "
+            f"(got {kernel.metadata.schema_version})"
+        )
     expected_units = ("+Y", "-Y", "ft", "ft^2", "ft^3")
     actual_units = (
         kernel.metadata.axis,
@@ -149,12 +241,7 @@ def load_geometry_package(path: str | Path) -> GeometryKernel:
         raise GeometryPackageError(f"could not read geometry NPZ: {target}") from exc
     if actual_hash != expected_hash:
         raise GeometryPackageError("NPZ SHA-256 does not match metadata")
-    try:
-        metadata = GeometryMetadata(**payload)
-    except (TypeError, ValueError) as exc:
-        raise GeometryPackageError(
-            f"geometry metadata fields are invalid: {exc}"
-        ) from exc
+    metadata = _metadata_from_payload(payload)
     try:
         with np.load(target, allow_pickle=False) as archive:
             arrays = {
