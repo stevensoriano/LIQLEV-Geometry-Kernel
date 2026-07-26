@@ -1,4 +1,22 @@
-"""Headless Monte Carlo execution for LIQLEV sensitivity analysis."""
+"""Headless Monte Carlo execution for LIQLEV sensitivity analysis.
+
+F17 / Phase 4.11 — abort integrity
+---------------------------------
+Custom-geometry samples can abort (``Conv Failed``) and emit a single bounded
+diagnostic row with ``Hratio ≈ 0``. Including those rows in the Monte Carlo
+population biases ``max`` / ``mean`` / ``p95`` / ``p99`` **low** — the
+non-conservative direction for level-rise analysis.
+
+Contract (measured, not silently relaxed):
+- Per-sample ``Conv Failed`` detection (any positive sum → aborted sample).
+- Aborted samples are **excluded** from ``all_dh`` and from dh statistics.
+- ``MonteCarloResult.aborted_count`` and ``aborted_params`` surface every abort.
+- If ``aborted_count / n > ABORT_FRACTION_THRESHOLD`` (10%), the run fails
+  loudly with :class:`MonteCarloAbortError`. The 10% threshold is small enough
+  that a non-trivial abort cluster cannot hide inside the population, while
+  still tolerating a rare isolated diagnostic without discarding an entire
+  study. It is a fixed contract of this module.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +31,37 @@ from liqlev.model.validation import validate_simulation_config
 from liqlev.runner.progress import ProgressCallback, ProgressEvent, emit_progress
 from liqlev.runner.single import build_property_table_for_config
 from core import liqlev_simulation
+
+
+# F17 contract: fail the whole Monte Carlo run when more than this fraction of
+# samples abort (Conv Failed). Chosen at 10% — small enough to keep statistics
+# representative, large enough that a single rare diagnostic does not discard
+# a study. Do not silently relax this constant.
+ABORT_FRACTION_THRESHOLD = 0.10
+
+
+class MonteCarloAbortError(RuntimeError):
+    """Raised when the Monte Carlo abort fraction exceeds the contract threshold.
+
+    Attributes mirror the partial run so callers can report which draws aborted
+    without re-running the study.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        aborted_count: int,
+        n: int,
+        aborted_params: list[dict[str, float]],
+        threshold: float = ABORT_FRACTION_THRESHOLD,
+    ) -> None:
+        super().__init__(message)
+        self.aborted_count = aborted_count
+        self.n = n
+        self.aborted_params = list(aborted_params)
+        self.threshold = threshold
+        self.abort_fraction = aborted_count / n if n else 1.0
 
 
 @dataclass(frozen=True)
@@ -39,6 +88,13 @@ class MonteCarloResult:
     p99: float
     worst: dict[str, float]
     elapsed_s: float
+    aborted_count: int = 0
+    aborted_params: list[dict[str, float]] | None = None
+
+    def __post_init__(self) -> None:
+        # frozen dataclass: normalize None → empty list for callers
+        if self.aborted_params is None:
+            object.__setattr__(self, "aborted_params", [])
 
 
 def validate_monte_carlo_request(request: MonteCarloRequest) -> None:
@@ -53,12 +109,27 @@ def validate_monte_carlo_request(request: MonteCarloRequest) -> None:
         raise ValueError("Gravity Min must be less than Max.")
 
 
+def _sample_is_aborted(dataframe) -> bool:
+    """Return True when a sample produced any solver convergence failure."""
+    if dataframe is None or getattr(dataframe, "empty", True):
+        return False
+    if "Conv Failed" not in dataframe.columns:
+        return False
+    return int(dataframe["Conv Failed"].sum()) > 0
+
+
 def run_monte_carlo(
     config: SimulationConfig,
     request: MonteCarloRequest,
     progress_cb: ProgressCallback | None = None,
 ) -> MonteCarloResult:
-    """Run legacy-compatible Monte Carlo sampling without GUI objects."""
+    """Run legacy-compatible Monte Carlo sampling without GUI objects.
+
+    Aborted custom-geometry samples (``Conv Failed``) are counted, excluded
+    from dh statistics, and surfaced on the result. When the abort fraction
+    exceeds :data:`ABORT_FRACTION_THRESHOLD`, raises
+    :class:`MonteCarloAbortError` (F17).
+    """
     geometry = validate_simulation_config(config)
     validate_monte_carlo_request(request)
 
@@ -75,12 +146,14 @@ def run_monte_carlo(
 
     all_dh: list[float] = []
     all_params: list[dict[str, float]] = []
+    aborted_params: list[dict[str, float]] = []
     worst = {"dh": 0.0, "vent": 0.0, "fill": 0.0, "grav": 0.0}
 
     for index in range(request.n):
         vent = float(rng.uniform(request.vent_min_lbm_s, request.vent_max_lbm_s))
         fill = float(rng.uniform(request.fill_min, request.fill_max))
         grav = float(rng.uniform(request.gravity_min_g, request.gravity_max_g))
+        draw = {"vent": vent, "fill": fill, "grav": grav}
 
         grav_ft = grav * G_TO_FT_S2
         tggo = np.array([0.0, config.run.duration_s])
@@ -111,9 +184,34 @@ def run_monte_carlo(
         )
 
         dataframe = liqlev_simulation(inputs, verbose=False, prop_table=prop_table)
+
+        if _sample_is_aborted(dataframe):
+            # F17: do not let Hratio≈0 diagnostic rows enter the dh population.
+            aborted_params.append(draw)
+            fraction = (index + 1) / request.n
+            emit_progress(
+                progress_cb,
+                ProgressEvent(
+                    kind="solver_progress",
+                    message=(
+                        f"Monte Carlo sample {index + 1}/{request.n} aborted "
+                        f"(Conv Failed)"
+                    ),
+                    fraction=fraction,
+                    run_index=index + 1,
+                    total_runs=request.n,
+                    stats={
+                        "aborted": 1.0,
+                        "aborted_count": float(len(aborted_params)),
+                        "max_so_far": worst["dh"],
+                    },
+                ),
+            )
+            continue
+
         max_dh = float(dataframe["Hratio"].max()) if not dataframe.empty else 0.0
         all_dh.append(max_dh)
-        all_params.append({"vent": vent, "fill": fill, "grav": grav})
+        all_params.append(draw)
 
         if max_dh > worst["dh"]:
             worst = {"dh": max_dh, "vent": vent, "fill": fill, "grav": grav}
@@ -131,6 +229,33 @@ def run_monte_carlo(
             ),
         )
 
+    aborted_count = len(aborted_params)
+    abort_fraction = aborted_count / request.n
+    if abort_fraction > ABORT_FRACTION_THRESHOLD:
+        raise MonteCarloAbortError(
+            (
+                f"Monte Carlo abort fraction {abort_fraction:.1%} "
+                f"({aborted_count}/{request.n}) exceeds the "
+                f"{ABORT_FRACTION_THRESHOLD:.0%} contract threshold "
+                f"(F17); aborted draws are excluded from dh statistics but "
+                f"too many aborts invalidate the study."
+            ),
+            aborted_count=aborted_count,
+            n=request.n,
+            aborted_params=aborted_params,
+            threshold=ABORT_FRACTION_THRESHOLD,
+        )
+
+    if not all_dh:
+        # Defensive: only reachable if threshold >= 1.0; keep loud failure.
+        raise MonteCarloAbortError(
+            "Monte Carlo produced no successful samples; all draws aborted.",
+            aborted_count=aborted_count,
+            n=request.n,
+            aborted_params=aborted_params,
+            threshold=ABORT_FRACTION_THRESHOLD,
+        )
+
     arr = np.array(all_dh)
     elapsed_s = time.perf_counter() - start
     result = MonteCarloResult(
@@ -144,15 +269,21 @@ def run_monte_carlo(
         p99=float(np.percentile(arr, 99)),
         worst=worst,
         elapsed_s=elapsed_s,
+        aborted_count=aborted_count,
+        aborted_params=aborted_params,
     )
     emit_progress(
         progress_cb,
         ProgressEvent(
             kind="complete",
-            message=f"Monte Carlo complete ({request.n} samples, {elapsed_s:.2f}s)",
+            message=(
+                f"Monte Carlo complete ({request.n} samples, "
+                f"{aborted_count} aborted, {elapsed_s:.2f}s)"
+            ),
             fraction=1.0,
             run_index=request.n,
             total_runs=request.n,
+            stats={"aborted_count": float(aborted_count)},
         ),
     )
     return result
