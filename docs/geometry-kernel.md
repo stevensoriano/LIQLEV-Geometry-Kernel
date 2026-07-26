@@ -136,6 +136,28 @@ and documented in
 Custom-cylinder acceptance therefore compares with the published report
 solution, while legacy results compare with the untouched saved baseline.
 
+**Gravity at the AK1 boundary (F1):** both modes feed the AK1 buoyancy
+correlation with gravity as a **dimensionless standard-g level** (heritage
+`Ggo`), not raw ft/s². See
+[`docs/physics/gravity-units-determination.md`](physics/gravity-units-determination.md).
+Low-g custom-mode film physics (δ ≤ A/P, zero-g saturation path, rate-scaled
+residual gate):
+[`docs/physics/low-gravity-boundary-layer.md`](physics/low-gravity-boundary-layer.md).
+
+**Headless-only custom geometry (F18):** `geometry_path` is a configuration /
+API field only. Neither `gui.py` nor `liqlev/ui_qt/app.py` exposes it; GUI
+diameter/height controls stay on the legacy cylinder branch.
+
+**LOX production case:** 43 L LOX / SSM-3 G0–G4 matrix —
+[`docs/lox-vent-test-definition.md`](lox-vent-test-definition.md),
+`validation/lox_vent_cases.py`,
+`validation/results/lox_vent_manifest.json`.
+
+**Opt-in Solver Status (F10):** public DataFrames stay 29 columns by default.
+Set `RunControls.include_solver_status` (or inputs `IncludeSolverStatus`) to
+expose the internal status codes 0–4. Repository README documents the enable
+path and code table; default-off preserves the physics baseline contract.
+
 ## Environment and reproducible artifact workflow
 
 From the repository root in PowerShell:
@@ -256,7 +278,13 @@ PCHIP authority. They measure solver evaluation-grid sensitivity only; they
 are not alternate CAD measurements or evidence that the CAD authority itself
 contains 1025 nodes. The recorded maximum height/boundary-layer-volume
 difference is `6.371214840947442e-05`, below the `0.2%` limit, with zero
-reported convergence failures.
+reported convergence failures. **The committed NASA result manifest that
+pins this value is frozen by lead ruling (finding D1):** the live post-F1-fix
+recomputed metric on this cluster is `4.977864341653149e-05` (physics move),
+over a ~1.5e-14 platform-FP layer vs the original 1e-15 pin; the red
+manifest-equality test is expected and documented in the repository README
+on-cluster gating convention — do not treat the frozen `6.371…e-05` digit as
+the current live physics metric.
 
 The exact CAD audit is
 [`nhq01-m21a-0201_LIQLEV_AUDIT.json`](../geometry/audit/nhq01-m21a-0201_LIQLEV_AUDIT.json).
