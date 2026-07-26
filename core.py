@@ -673,6 +673,15 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
     if geometry_mode not in (0, 1):
         raise ValueError("GeometryMode must be 0 (legacy) or 1 (custom)")
 
+    # F11(b): custom geometry owns wall-contact epsilon; a Neps schedule would
+    # be silently discarded by the geometry_mode == 1 branch order.
+    if geometry_mode == 1 and neps > 0:
+        raise ValueError(
+            "Neps > 0 is incompatible with GeometryMode == 1; custom geometry "
+            "computes wall-contact epsilon from the geometry kernel, so the "
+            "Neps/Teps/Xeps schedule would be discarded silently"
+        )
+
     # F7: configurable RK4 substeps for boundary-layer integration (default 4).
     bl_substeps_raw = inputs.get('blsubsteps', 4)
     try:

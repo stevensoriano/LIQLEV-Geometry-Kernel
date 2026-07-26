@@ -95,6 +95,13 @@ def build_inputs(
                 f"DensitySat={rhol_direct!r} relative={relative!r}"
             )
 
+    if geometry is not None and xmlzro_override is not None:
+        # F11(a): previously the override was silently ignored under geometry.
+        raise ValueError(
+            "xmlzro_override cannot be combined with custom geometry; "
+            "initial liquid mass is derived from fill_fraction * geometry "
+            "volume * density (override would be discarded silently)"
+        )
     if geometry is not None:
         volt = geometry.total_volume_ft3
         htzero = float(
