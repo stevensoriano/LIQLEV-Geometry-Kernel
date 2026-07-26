@@ -56,6 +56,7 @@ FLUID_STEP_PATH = (
 MANIFEST_PATH = (
     ROOT / "validation" / "results" / "nasa_tank_geometry_manifest.json"
 ).resolve()
+NASA_HARNESS_MODULE_PATH = Path(__file__).resolve()
 
 FILL_FRACTIONS = (0.10, 0.25, 0.50, 0.75, 0.90)
 COARSE_NODE_COUNT = 513
@@ -519,6 +520,25 @@ def _git_head() -> str:
     ).strip()
 
 
+def _git_describe_dirty() -> str:
+    return subprocess.check_output(
+        ["git", "describe", "--dirty", "--always"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
+
+
+def _git_worktree_is_dirty() -> bool:
+    """Return True when the repository has uncommitted changes."""
+
+    porcelain = subprocess.check_output(
+        ["git", "status", "--porcelain"],
+        cwd=ROOT,
+        text=True,
+    )
+    return bool(porcelain.strip())
+
+
 def _finite_or_none(value: float) -> float | None:
     numeric = float(value)
     return numeric if np.isfinite(numeric) else None
@@ -561,11 +581,14 @@ def build_result_manifest(
     validation: NasaTankValidation,
     *,
     solver_commit: str | None = None,
+    solver_describe: str | None = None,
 ) -> dict[str, object]:
-    """Build the deterministic JSON result manifest payload."""
+    """Build the deterministic JSON result manifest payload (F8 hardened)."""
 
     if solver_commit is None:
         solver_commit = _git_head()
+    if solver_describe is None:
+        solver_describe = _git_describe_dirty()
     return {
         "schema": "liqlev.validation.nasa_tank_geometry",
         "version": 1,
@@ -576,7 +599,13 @@ def build_result_manifest(
         "geometry_npz_sha256": sha256_file(GEOMETRY_NPZ_PATH),
         "fluid_step": str(FLUID_STEP_PATH.relative_to(ROOT)).replace("\\", "/"),
         "fluid_step_sha256": sha256_file(FLUID_STEP_PATH),
+        "harness_module": str(NASA_HARNESS_MODULE_PATH.relative_to(ROOT)).replace(
+            "\\",
+            "/",
+        ),
+        "harness_module_sha256": sha256_file(NASA_HARNESS_MODULE_PATH),
         "solver_commit": solver_commit,
+        "solver_describe": solver_describe,
         "versions": {
             "python": platform.python_version(),
             "numpy": np.__version__,
@@ -660,14 +689,32 @@ def build_result_manifest(
 
 def write_result_manifest(
     validation: NasaTankValidation,
+    path: str | Path | None = None,
     *,
     solver_commit: str | None = None,
+    solver_describe: str | None = None,
 ) -> dict[str, object]:
-    """Write and return the NASA tank result manifest."""
+    """Write and return the NASA tank result manifest, refusing a dirty tree (F8).
 
-    payload = build_result_manifest(validation, solver_commit=solver_commit)
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST_PATH.write_text(
+    The production path is ``validation/results/nasa_tank_geometry_manifest.json``
+    (frozen / D1-asserted). Tests and probes must pass ``tmp_path`` (or another
+    explicit path) and must never rewrite the committed frozen manifest.
+    """
+
+    if _git_worktree_is_dirty():
+        raise RuntimeError(
+            "Refusing to write NASA tank manifest from a dirty git worktree "
+            "(F8 provenance guard). Commit or stash changes first."
+        )
+
+    target = Path(path) if path is not None else MANIFEST_PATH
+    payload = build_result_manifest(
+        validation,
+        solver_commit=solver_commit,
+        solver_describe=solver_describe,
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
         json.dumps(payload, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
