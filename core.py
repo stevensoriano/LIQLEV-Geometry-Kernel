@@ -94,12 +94,15 @@ def _solver_loop(
 
     Returns
     -------
-    result_arr : ndarray (N, 29)
+    result_arr : ndarray (N, 30)
+        Columns 0-28 match the public 29-column contract; column 29 is the
+        internal Solver Status code (always written; sliced off by default in
+        the public API — see IncludeSolverStatus / F10).
     step_count : int
     """
-    # Pre-allocate
+    # Pre-allocate: 29 public columns + 1 internal Solver Status (F10).
     est_steps = int((tvmdot[-1] / delta) * 1.2) + 100
-    n_cols = 29
+    n_cols = 30
     res = np.empty((est_steps, n_cols))
 
     # State
@@ -224,6 +227,9 @@ def _solver_loop(
         svfvbl = 0.0
         solver_active = True
         custom_failure = False
+        # F10 status disambiguation (legacy Conv Failed remains the OR of these).
+        integration_fail = False
+        volume_inversion_fail = False
         custom_exit_rate = 0.0
         normalized_exit_flow = 0.0
         delblz = 0.0
@@ -234,6 +240,7 @@ def _solver_loop(
         negative_fvbl = 0.0
         have_positive = False
         have_negative = False
+        zht2_s = zht1  # BL integration top height (predictor); always defined
 
         while solver_active and nconv < 80:
             zht2_s = zht1 + dhdt * delta
@@ -256,6 +263,7 @@ def _solver_loop(
                 )
                 if integration_status != 0:
                     custom_failure = True
+                    integration_fail = True
                     break
                 delblz = custom_delta
                 vbl2 = custom_vbl
@@ -412,6 +420,7 @@ def _solver_loop(
                 )
                 if not np.isfinite(h2):
                     custom_failure = True
+                    volume_inversion_fail = True
                     dhdt = 0.0
                     zht2 = h1
                     h2 = h1
@@ -516,6 +525,33 @@ def _solver_loop(
             if solver_active or custom_failure
             else 0.0
         )
+        # F10 Solver Status (internal col 29). Codes:
+        # 0 ok; 1 AK3 non-convergence; 2 BL integration failure;
+        # 3 volume inversion OOD; 4 BL saturated at A/P (derived, no JIT
+        # contract change). Failure codes take precedence over saturation.
+        if integration_fail:
+            status_code = 2.0
+        elif solver_active:
+            status_code = 1.0
+        elif volume_inversion_fail:
+            status_code = 3.0
+        else:
+            status_code = 0.0
+            if geometry_mode == 1 and np.isfinite(delblz):
+                # Derive code 4 from δ_top vs A/P at the BL integration height
+                # without changing integrate_boundary_layer's return contract.
+                perim_top = _interp(zht2_s, geom_height, geom_perimeter)
+                area_top = eval_ppoly_derivative(
+                    zht2_s,
+                    geom_height,
+                    geom_volume_coefficients,
+                )
+                if perim_top > 0.0 and area_top > 0.0:
+                    a_over_p = area_top / perim_top
+                    # Post-clamp δ equals A/P within 1e-6 when saturated.
+                    if delblz >= a_over_p * (1.0 - 1.0e-6):
+                        status_code = 4.0
+        res[step, 29] = status_code
         step += 1
 
         if geometry_mode == 1 and (solver_active or custom_failure):
@@ -551,6 +587,9 @@ _COL_NAMES = [
     'Gravity_g', 'Superheat', 'Vap Gen Rate (kg/s)', 'Total Vap Gen (kg)',
     'Conv Failed',
 ]
+# F10 opt-in 30th column (default OFF — public DataFrame stays 29-col contract).
+_SOLVER_STATUS_COL = 'Solver Status'
+_COL_NAMES_WITH_STATUS = _COL_NAMES + [_SOLVER_STATUS_COL]
 
 
 def _require_custom_geometry_array(inputs, input_name, ndim):
@@ -693,6 +732,19 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
     if isinstance(bl_substeps_raw, bool) or bl_substeps <= 0:
         raise ValueError(
             f"BLSubsteps must be a positive integer (got {bl_substeps_raw!r})"
+        )
+
+    # F10 / guard 4.5: opt-in Solver Status column. Default OFF preserves the
+    # exact 29-column public contract (baseline checker column-list equality).
+    # Travels as inputs key IncludeSolverStatus (mirrors GeometryMode / Units);
+    # config field RunControls.include_solver_status → build_inputs → here.
+    include_solver_status_raw = inputs.get('includesolverstatus', False)
+    if isinstance(include_solver_status_raw, (bool, int, float, np.bool_)):
+        include_solver_status = bool(include_solver_status_raw)
+    else:
+        raise ValueError(
+            "IncludeSolverStatus must be a boolean "
+            f"(got {include_solver_status_raw!r})"
         )
 
     if units == "SI":
@@ -889,4 +941,11 @@ def liqlev_simulation(inputs, verbose=True, prop_table=None, progress_cb=None):
             "pct_complete": 100.0,
         })
 
-    return pd.DataFrame(res_arr[:n_steps], columns=_COL_NAMES)
+    # Default OFF: slice to 29 columns so the public contract is byte-stable.
+    # Opt-in: expose the always-captured internal status as column 29.
+    if include_solver_status:
+        return pd.DataFrame(
+            res_arr[:n_steps],
+            columns=_COL_NAMES_WITH_STATUS,
+        )
+    return pd.DataFrame(res_arr[:n_steps, :29], columns=_COL_NAMES)

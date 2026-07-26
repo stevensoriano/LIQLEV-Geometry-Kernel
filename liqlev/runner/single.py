@@ -216,6 +216,7 @@ def _run_single_case_prevalidated(
         tinit_override=config.fluid.initial_temperature_r,
         geometry=geometry,
         boundary_layer_substeps=config.run.boundary_layer_substeps,
+        include_solver_status=config.run.include_solver_status,
     )
 
     if loaded_vent_profile is not None:

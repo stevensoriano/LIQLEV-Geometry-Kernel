@@ -44,6 +44,7 @@ def build_inputs(
     tinit_override: float | None = None,
     geometry: GeometryKernel | None = None,
     boundary_layer_substeps: int | None = None,
+    include_solver_status: bool | None = None,
 ) -> dict[str, Any]:
     """Build the input dictionary consumed by ``core.liqlev_simulation``.
 
@@ -51,6 +52,11 @@ def build_inputs(
     ``BLSubsteps`` for the solver. Omitted when ``None`` so callers that
     compare against legacy ``physics_cases.build_case_inputs`` key sets stay
     byte-compatible; ``liqlev_simulation`` defaults missing keys to 4 (F7).
+
+    ``include_solver_status`` (optional, F10): when True, written as
+    ``IncludeSolverStatus`` so the public DataFrame exposes the internal
+    Solver Status column. Omitted / False keeps the default 29-column
+    contract; ``liqlev_simulation`` defaults missing keys to False.
     """
     volt = (np.pi / 4) * (dtank**2) * htank
     ac = 0.7854 * (dtank**2)
@@ -198,6 +204,9 @@ def build_inputs(
                 f"(got {boundary_layer_substeps!r})"
             )
         inputs["BLSubsteps"] = boundary_layer_substeps
+    # F10: only emit the key when True so legacy baseline key sets stay clean.
+    if include_solver_status:
+        inputs["IncludeSolverStatus"] = True
     return inputs
 
 
