@@ -34,7 +34,11 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from validation.custom_geometry_cases import _dataframe_is_physical
+from liqlev.runner.single import run_single_case
+from validation.custom_geometry_cases import (
+    _dataframe_is_physical,
+    build_nasa_tank_config,
+)
 from validation.lox_vent_cases import (
     G0,
     G3,
@@ -153,3 +157,54 @@ def test_ullage_guard_fires_on_synthetic_negative_ullage_via_real_predicates() -
     # NASA live predicate accepts any carrier with .dataframe (SingleCaseResult).
     carrier = SimpleNamespace(dataframe=frame)
     assert _dataframe_is_physical(carrier, TANK_TOTAL_HEIGHT_FT) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "F4: hydrogen stand-in (3000x volume-mismatched acceptance case) fails "
+        "strict ullage closure at high fill — measured 14.6% @ 0.75 / ~121% + "
+        "negative ullage @ 0.90 (pre-campaign 11.5%/34.4%; deepened by the "
+        "approved F1 physics correction). Fires when the bookkeeping is "
+        "reconciled or the stand-in is retired (path-forward: LOX case replaces "
+        "it)."
+    ),
+)
+def test_nasa_hydrogen_standin_ullage_passes_strict_guard() -> None:
+    """F4 quarantine tripwire: hydrogen stand-in fill 0.90 must pass strict ullage.
+
+    Lead ruling (supervisor attribution confirmed): the guard stays STRICT on
+    LOX/custom; this 3000x volume-mismatched NASA hydrogen stand-in is
+    quarantined as xfail(strict). Pre-existing refinement tests are untouched.
+
+    Criteria covered
+    ----------------
+    1. FIRES ON BAD CASE — live production fill 0.90 currently fails strict
+       ullage (closure ~121%, negative ullage mass); xfail(strict) records that
+       pathology until reconcile/retire.
+    2. RECOVERY-FORM — asserts the recovered-good state (predicate True, no
+       ``ullage_mass_closure``, all Ullage Mass > 0). Fails today → xfail
+       satisfied; XPASS later forces marker removal (tripwire).
+    3. REAL CODE PATH — ``build_nasa_tank_config`` (same builder as
+       ``run_nasa_tank_validation``) + ``run_single_case`` at fill 0.90 on the
+       production geometry package; strict predicate is the s6a LOX function
+       ``assess_lox_dataframe_physicality`` / ``ullage_mass_is_acceptable``
+       (no residual reimplementation).
+    4. REACHABILITY — production NASA config builder + single-case runner +
+       LOX strict ullage gate used on the live LOX path.
+    """
+
+    assert ULLAGE_CLOSURE_RELATIVE_TOLERANCE == 0.05  # never relaxed
+
+    # Same builder run_nasa_tank_validation uses; production grid only (one fill).
+    config = build_nasa_tank_config()
+    result = run_single_case(config, fill_fraction=0.90)
+    dataframe = result.dataframe
+
+    # s6a LOX strict ullage predicate + classification (drive, do not copy).
+    assert ullage_mass_is_acceptable(dataframe) is True
+    physical, classifications = assess_lox_dataframe_physicality(dataframe)
+    assert physical is True
+    assert ULLAGE_MASS_CLOSURE_CLASSIFICATION not in classifications
+    assert classifications == ()
+    assert bool((dataframe["Ullage Mass"] > 0.0).all())
