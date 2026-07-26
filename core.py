@@ -315,7 +315,18 @@ def _solver_loop(
                 fvbl = 1e30
 
             # Convergence check
-            if abs(fvbl) <= 0.001 * vbl2:
+            # Custom mode gates the O(dt) vapour-balance residual against the O(dt)
+            # mass terms themselves; an absolute tolerance (0.001*vbl2) accepts a
+            # false quasi-steady state once S*dt fits inside it (2026-07-25
+            # investigation: caused dt-collapse of rise, low-g closure blow-up, and
+            # the G1>G0 inversion). Legacy keeps the original absolute gate.
+            if geometry_mode == 1 and rhol != 0:
+                source_vol = ak2 * xml1 * delta / rhol
+                exit_vol = custom_exit_rate * delta
+                fvbl_tol = 0.001 * (abs(source_vol) + abs(exit_vol))
+            else:
+                fvbl_tol = 0.001 * vbl2
+            if abs(fvbl) <= fvbl_tol:
                 solver_active = False
             elif geometry_mode == 1:
                 if fvbl > 0.0:

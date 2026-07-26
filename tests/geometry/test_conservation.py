@@ -49,11 +49,10 @@ where the coefficient 0.001 matches the recommended solver gate and ABS_FLOOR
 absorbs post-hoc CSV reconstruction lag (measured max |f_VBL| ≈ 8.8e-6 at
 true quasi-steady Δt=0.02, t∈[25, 40] s → floor 2e-5).
 
-- Δt = 0.02, QS window: GREEN today (true E≈S root).
-- Δt = 0.005, frozen window: VIOLATED today — absolute 0.001·V_BL gate accepts
-  a false quasi-steady BL state (E ≠ S, V_BL frozen). Marked
-  ``xfail(strict=True)`` as a permanent tripwire; a future gate fix must XPASS
-  and force marker removal (lead-approved solver change only).
+- Δt = 0.02, QS window: GREEN (true E≈S root).
+- Δt = 0.005: GREEN after the custom-mode rate-scaled residual gate fix
+  (2026-07-25 s5a-gate-fix). Was a strict-xfail tripwire under the absolute
+  0.001·V_BL gate, which accepted a false quasi-steady BL (E ≠ S, V_BL frozen).
 """
 
 from __future__ import annotations
@@ -377,21 +376,12 @@ def test_lox_bl_inventory_identity_rate_scaled_at_plateau_dt() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "absolute 0.001*vbl2 residual gate accepts a false quasi-steady BL "
-        "state at fine dt (E≠S, V_BL frozen); investigation 2026-07-25 "
-        "i1-mechanism + i3 intervention. Fix requires lead-approved solver "
-        "change to a rate-scaled gate; when fixed this test XPASSes and the "
-        "marker must be removed."
-    ),
-)
 def test_lox_bl_inventory_identity_rate_scaled_fine_dt_tripwire() -> None:
-    """TRIPWIRE: same rate-scaled identity at Δt=0.005 — VIOLATED today.
+    """Rate-scaled BL inventory identity at Δt=0.005 (post gate-fix).
 
-    Freeze occurs by ~5 s; window t∈[5, 12] s has |S−E|/(|S|+|E|)≈0.60 and
-    |f_VBL| ≫ 0.001·(|S|+|E|)·Δt + floor. strict=True → XPASS on gate fix.
+    Was a strict-xfail tripwire under the absolute 0.001·V_BL gate (freeze by
+    ~5 s, |S−E|/(|S|+|E|)≈0.60). With the rate-scaled custom-mode gate the
+    window t∈[5, 12] s satisfies the identity and BL inventory grows.
     """
 
     delta_s = 0.005
@@ -400,9 +390,10 @@ def test_lox_bl_inventory_identity_rate_scaled_fine_dt_tripwire() -> None:
     )
     assert summary.conv_failed_total == 0
     assert summary.finite
-    # Document the freeze signature on stock solver
-    assert summary.final_vbl_vol_ft3 < 0.15
-    assert summary.max_ak3 < 0.04
+    # Post-fix sanity: fine-dt no longer freezes the BL (stock had V_BL<0.15,
+    # max_ak3<0.04 with |S-E|/(|S|+|E|)≈0.60). Gate fix recovers growth.
+    assert summary.final_vbl_vol_ft3 > 0.15
+    assert summary.max_ak3 > 0.04
 
     _assert_rate_scaled_bl_identity(
         dataframe, delta_s, t_min=5.0, t_max=12.0
