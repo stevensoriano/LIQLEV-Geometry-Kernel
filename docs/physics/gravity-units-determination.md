@@ -295,3 +295,21 @@ py_files review branch `580b43b`, heritage `f84de57`):
   That is the manifest consistency guard detecting a platform change, not a solver or
   physics discrepancy, and it does not touch the F1 evidence. The manifest is left
   unmodified.
+
+---
+
+## Post-fix docs map (Phase 5 cross-reference only)
+
+Measured F1 content above landed in Step 2; this block does **not** rewrite that
+history. Readers of later campaign docs should start here for units, then follow:
+
+| Topic | Document |
+|-------|----------|
+| Low-g BL physics (δ ≤ A/P, custom g=0 saturation, rate-scaled residual gate, G0 bound-only caveat, production max AK3) | [`low-gravity-boundary-layer.md`](low-gravity-boundary-layer.md) |
+| LOX 43 L / SSM-3 test definition (all eight §5 assumptions; production G0–G4 matrix; hydrogen stand-in F4 deprecation) | [`../lox-vent-test-definition.md`](../lox-vent-test-definition.md) |
+| On-cluster gating convention (suite green EXCEPT frozen D1; F4 xfail; F10 Solver Status; F18 headless custom geometry) | Repository [`README.md`](../../README.md) (gating / F10 / custom-geometry sections) and [`../geometry-kernel.md`](../geometry-kernel.md) |
+
+**D1 after F1 (pointer only):** the frozen manifest value `6.371214840947442e-05`
+is unchanged by this determination. Live post-F1 recomputation on the cluster is
+`4.977864341653149e-05`; the red is expected by lead ruling. See the README
+two-layer D1 note — not a reopening of the pre-fix platform-FP appendix above.
