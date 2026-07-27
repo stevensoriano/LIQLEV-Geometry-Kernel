@@ -33,5 +33,5 @@ dist/
 geometry/work/
 geometry/tmp/
 
-# Claude Code
+# Local tool scratch directories
 .claude/
