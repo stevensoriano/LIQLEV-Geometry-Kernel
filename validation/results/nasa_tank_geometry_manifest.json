@@ -5,7 +5,10 @@
   "geometry_npz_sha256": "859EE059A5B0E3A095A6F62697EA3B2F936B6CA057532C5734C81D39D5085C9E",
   "fluid_step": "geometry/output/nhq01-m21a-0201_LIQLEV_FLUID_DOMAIN.step",
   "fluid_step_sha256": "648C9ACEEEF9CD0283617608E7AECA62F92A814A5F67E130A152A330C30BA5AE",
-  "solver_commit": "8393dfb921bf3bf7602b56f648f9d55ce89b6f9f",
+  "harness_module": "validation/custom_geometry_cases.py",
+  "harness_module_sha256": "8A27FFCE5F8D2321DD38F693E499C06029BA2B73AC12E76D4994D342FACCB40A",
+  "solver_commit": "ac960125752a529b6749532e431390fc11810859",
+  "solver_describe": "ac96012",
   "versions": {
     "python": "3.13.5",
     "numpy": "2.3.4",
@@ -33,51 +36,51 @@
     "0.10": {
       "rows": 9,
       "convergence_count": 0,
-      "minimum_height_ft": 0.30931294387570507,
-      "maximum_height_ft": 0.31690613170062404,
-      "minimum_boundary_layer_volume_ft3": 0.00402579064970048,
-      "minimum_boundary_layer_thickness_ft": 0.005758237750146355,
+      "minimum_height_ft": 0.31661041190998696,
+      "maximum_height_ft": 0.32143148178523373,
+      "minimum_boundary_layer_volume_ft3": 0.009784483872226758,
+      "minimum_boundary_layer_thickness_ft": 0.013962762320227012,
       "finite": true
     },
     "0.25": {
       "rows": 12,
       "convergence_count": 0,
-      "minimum_height_ft": 0.5546906101097138,
-      "maximum_height_ft": 0.5680929685731451,
-      "minimum_boundary_layer_volume_ft3": 0.01158996431915956,
-      "minimum_boundary_layer_thickness_ft": 0.007979597891110034,
+      "minimum_height_ft": 0.5711508195625239,
+      "maximum_height_ft": 0.5790456109675931,
+      "minimum_boundary_layer_volume_ft3": 0.02556903424634718,
+      "minimum_boundary_layer_thickness_ft": 0.017564087418335088,
       "finite": true
     },
     "0.50": {
       "rows": 17,
       "convergence_count": 0,
-      "minimum_height_ft": 0.8865343183593464,
-      "maximum_height_ft": 0.910461741937719,
-      "minimum_boundary_layer_volume_ft3": 0.02467529303870778,
-      "minimum_boundary_layer_thickness_ft": 0.009727511766115048,
+      "minimum_height_ft": 0.9186557566562994,
+      "maximum_height_ft": 0.9350219792946437,
+      "minimum_boundary_layer_volume_ft3": 0.04867101142461886,
+      "minimum_boundary_layer_thickness_ft": 0.019146388725335216,
       "finite": true
     },
     "0.75": {
       "rows": 22,
       "convergence_count": 0,
-      "minimum_height_ft": 1.218310425434505,
-      "maximum_height_ft": 1.2581714802835458,
-      "minimum_boundary_layer_volume_ft3": 0.03923587943466278,
-      "minimum_boundary_layer_thickness_ft": 0.01112922804235045,
+      "minimum_height_ft": 1.2679931853823132,
+      "maximum_height_ft": 1.3118410201424955,
+      "minimum_boundary_layer_volume_ft3": 0.07049394050827386,
+      "minimum_boundary_layer_thickness_ft": 0.019954434983692364,
       "finite": true
     },
     "0.90": {
       "rows": 25,
       "convergence_count": 0,
-      "minimum_height_ft": 1.462307685553619,
-      "maximum_height_ft": 1.5288851862731698,
-      "minimum_boundary_layer_volume_ft3": 0.051134761025808176,
-      "minimum_boundary_layer_thickness_ft": 0.012957043941771999,
+      "minimum_height_ft": 1.5405616122273873,
+      "maximum_height_ft": 1.6970064376717717,
+      "minimum_boundary_layer_volume_ft3": 0.0866603968987103,
+      "minimum_boundary_layer_thickness_ft": 0.02191140801867585,
       "finite": true
     }
   },
   "maximum_convergence_count": 0,
-  "maximum_refinement_difference": 6.371214840947442e-05,
+  "maximum_refinement_difference": 4.9778643415717607e-05,
   "solver_evaluation_grid_refinement": {
     "continuous_authority": "committed_92_node_cad_derived_kernel",
     "scope": "Solver evaluation-grid sensitivity only; this is not a new CAD-accuracy measurement.",
@@ -94,37 +97,39 @@
     },
     "per_fill_maxima": {
       "0.10": {
-        "maximum_height_relative_difference": 3.2350260761165105e-07,
-        "height_maximum_time_s": 80.0,
-        "maximum_boundary_layer_volume_relative_difference": 6.371214840947442e-05,
-        "boundary_layer_volume_maximum_time_s": 90.0
+        "maximum_height_relative_difference": 2.3278306722125163e-07,
+        "height_maximum_time_s": 40.0,
+        "maximum_boundary_layer_volume_relative_difference": 9.862586169168142e-06,
+        "boundary_layer_volume_maximum_time_s": 40.0
       },
       "0.25": {
-        "maximum_height_relative_difference": 3.7871099038696846e-07,
+        "maximum_height_relative_difference": 9.35459101387426e-07,
         "height_maximum_time_s": 10.0,
-        "maximum_boundary_layer_volume_relative_difference": 4.402500264341162e-05,
+        "maximum_boundary_layer_volume_relative_difference": 4.9778643415717607e-05,
         "boundary_layer_volume_maximum_time_s": 10.0
       },
       "0.50": {
-        "maximum_height_relative_difference": 4.8556678940528326e-09,
-        "height_maximum_time_s": 80.0,
-        "maximum_boundary_layer_volume_relative_difference": 4.234141252479349e-07,
-        "boundary_layer_volume_maximum_time_s": 80.0
+        "maximum_height_relative_difference": 6.754174463209344e-09,
+        "height_maximum_time_s": 10.0,
+        "maximum_boundary_layer_volume_relative_difference": 3.287303551210729e-07,
+        "boundary_layer_volume_maximum_time_s": 10.0
       },
       "0.75": {
-        "maximum_height_relative_difference": 2.445591085940042e-07,
-        "height_maximum_time_s": 120.0,
-        "maximum_boundary_layer_volume_relative_difference": 1.8360254013204253e-05,
+        "maximum_height_relative_difference": 9.057760547723776e-07,
+        "height_maximum_time_s": 180.0,
+        "maximum_boundary_layer_volume_relative_difference": 2.161729955443997e-05,
         "boundary_layer_volume_maximum_time_s": 10.0
       },
       "0.90": {
-        "maximum_height_relative_difference": 5.131515714003905e-07,
-        "height_maximum_time_s": 50.0,
-        "maximum_boundary_layer_volume_relative_difference": 1.2852065230229182e-05,
-        "boundary_layer_volume_maximum_time_s": 50.0
+        "maximum_height_relative_difference": 3.918183081890651e-06,
+        "height_maximum_time_s": 220.0,
+        "maximum_boundary_layer_volume_relative_difference": 1.9092180695999016e-05,
+        "boundary_layer_volume_maximum_time_s": 220.0
       }
     }
   },
-  "failure_classifications": [],
+  "failure_classifications": [
+    "ullage_mass_closure"
+  ],
   "passed": true
 }

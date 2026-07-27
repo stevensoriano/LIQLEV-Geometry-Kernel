@@ -14,7 +14,7 @@ import numpy as np
 
 from liqlev.geometry.jit import invert_monotone_volume
 from liqlev.geometry.schema import GeometryKernel
-from thermo_utils import DensitySat, Psat, Tsat
+from thermo_utils import DensitySat, Psat, Tsat, build_property_table, sli
 
 
 PSI_TO_KPA = 6.89475729
@@ -43,8 +43,21 @@ def build_inputs(
     xmlzro_override: float | None = None,
     tinit_override: float | None = None,
     geometry: GeometryKernel | None = None,
+    boundary_layer_substeps: int | None = None,
+    include_solver_status: bool | None = None,
 ) -> dict[str, Any]:
-    """Build the input dictionary consumed by ``core.liqlev_simulation``."""
+    """Build the input dictionary consumed by ``core.liqlev_simulation``.
+
+    ``boundary_layer_substeps`` (optional): when provided, written as
+    ``BLSubsteps`` for the solver. Omitted when ``None`` so callers that
+    compare against legacy ``physics_cases.build_case_inputs`` key sets stay
+    byte-compatible; ``liqlev_simulation`` defaults missing keys to 4 (F7).
+
+    ``include_solver_status`` (optional, F10): when True, written as
+    ``IncludeSolverStatus`` so the public DataFrame exposes the internal
+    Solver Status column. Omitted / False keeps the default 29-column
+    contract; ``liqlev_simulation`` defaults missing keys to False.
+    """
     volt = (np.pi / 4) * (dtank**2) * htank
     ac = 0.7854 * (dtank**2)
     htzero = fill_fraction * htank
@@ -65,10 +78,36 @@ def build_inputs(
             + 9.424e-8 * tinit**5
         )
     else:
+        # F9: use the same 400-point property table the solver interpolates so
+        # xmlzro / rhol_table equals the intended initial liquid volume.
+        pt_temps, pt_rhol, *_ = build_property_table(
+            fluid, pfinal_psia, pinit_psia
+        )
+        rhol = float(sli(tinit, pt_temps, pt_rhol))
+        # Loud backstop: DensitySat path must stay near the table (catches a
+        # broken table build or a bad initial temperature).
         t_k = tinit / 1.8
         ps_kpa = Psat(fluid, t_k)
-        rhol = DensitySat(fluid, "liquid", ps_kpa) * 0.0624279606
+        rhol_direct = DensitySat(fluid, "liquid", ps_kpa) * 0.0624279606
+        if not math.isfinite(rhol) or rhol <= 0.0:
+            raise ValueError(
+                f"Non-hydrogen liquid density from property table is invalid: "
+                f"table={rhol!r} DensitySat={rhol_direct!r}"
+            )
+        relative = abs(rhol - rhol_direct) / rhol
+        if relative > 1.0e-6:
+            raise ValueError(
+                f"Non-hydrogen liquid density inconsistency: table={rhol!r} "
+                f"DensitySat={rhol_direct!r} relative={relative!r}"
+            )
 
+    if geometry is not None and xmlzro_override is not None:
+        # F11(a): previously the override was silently ignored under geometry.
+        raise ValueError(
+            "xmlzro_override cannot be combined with custom geometry; "
+            "initial liquid mass is derived from fill_fraction * geometry "
+            "volume * density (override would be discarded silently)"
+        )
     if geometry is not None:
         volt = geometry.total_volume_ft3
         htzero = float(
@@ -151,6 +190,23 @@ def build_inputs(
                 "GeomSidewallCoefficients": geometry.sidewall_coefficients,
             }
         )
+    if boundary_layer_substeps is not None:
+        if type(boundary_layer_substeps) is not int or isinstance(
+            boundary_layer_substeps, bool
+        ):
+            raise ValueError(
+                "boundary_layer_substeps must be a positive integer "
+                f"(got {boundary_layer_substeps!r})"
+            )
+        if boundary_layer_substeps <= 0:
+            raise ValueError(
+                "boundary_layer_substeps must be a positive integer "
+                f"(got {boundary_layer_substeps!r})"
+            )
+        inputs["BLSubsteps"] = boundary_layer_substeps
+    # F10: only emit the key when True so legacy baseline key sets stay clean.
+    if include_solver_status:
+        inputs["IncludeSolverStatus"] = True
     return inputs
 
 

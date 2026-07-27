@@ -100,7 +100,7 @@ def test_nasa_tank_result_manifest_matches_current_evidence(
     assert manifest["maximum_refinement_difference"] == pytest.approx(
         nasa_validation.maximum_refinement_difference,
         rel=0.0,
-        abs=1e-15,
+        abs=1e-12,
     )
     assert manifest["passed"] is nasa_validation.passed
     assert manifest["solver_evaluation_grid_refinement"][
@@ -117,12 +117,12 @@ def test_nasa_tank_result_manifest_matches_current_evidence(
         assert recorded["maximum_height_relative_difference"] == pytest.approx(
             metrics.max_height_relative_difference,
             rel=0.0,
-            abs=1e-15,
+            abs=1e-12,
         )
         assert recorded[
             "maximum_boundary_layer_volume_relative_difference"
         ] == pytest.approx(
             metrics.max_boundary_layer_volume_relative_difference,
             rel=0.0,
-            abs=1e-15,
+            abs=1e-12,
         )

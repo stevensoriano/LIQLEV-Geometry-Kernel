@@ -154,6 +154,8 @@ def _boundary_layer_derivatives(
     else:
         delta = (1.5 * max(q, 0.0) / perimeter) ** (2.0 / 3.0)
     area = eval_ppoly_derivative(h, height, volume_coefficients)
+    if perimeter > 0.0 and area > 0.0:
+        delta = min(delta, area / perimeter)  # BL cannot exceed its section
     return ak3 * (area - perimeter * delta), perimeter * delta
 
 
@@ -167,7 +169,7 @@ def integrate_boundary_layer(
     substeps: int,
 ) -> tuple[float, float, float, int]:
     if (
-        ak3 <= 0.0
+        ak3 < 0.0
         or not np.isfinite(ak3)
         or not np.isfinite(top_height)
         or top_height < height[0]
@@ -175,6 +177,10 @@ def integrate_boundary_layer(
         or substeps <= 0
     ):
         return np.nan, np.nan, np.nan, 1
+
+    # Exact: dq/dh = 0 => q = delta = V_BL = 0
+    if ak3 == 0.0:
+        return 0.0, 0.0, 0.0, 0
 
     q = 0.0
     vbl = 0.0
@@ -232,11 +238,25 @@ def integrate_boundary_layer(
             if not np.isfinite(next_q) or not np.isfinite(next_vbl):
                 return np.nan, np.nan, np.nan, 1
             q = max(0.0, next_q)
+            # Overshoot guard: q may not exceed the local saturated value
+            # q_sat = (2/3) * P * (A/P)^1.5  (primary bound is the δ cap in
+            # _boundary_layer_derivatives; this only cleans RK4 overshoot).
+            area_h = eval_ppoly_derivative(h + step, height, volume_coefficients)
+            perimeter_h = interp_linear_nonnegative(
+                h + step, height, perimeter_values
+            )
+            if perimeter_h > 0.0 and area_h > 0.0:
+                delta_sat = area_h / perimeter_h
+                q_sat = (2.0 / 3.0) * perimeter_h * (delta_sat ** 1.5)
+                q = min(q, q_sat)
             vbl = max(0.0, next_vbl)
             h += step
 
     perimeter_top = interp_linear_nonnegative(
         top_height, height, perimeter_values
+    )
+    area_top = eval_ppoly_derivative(
+        top_height, height, volume_coefficients
     )
     if perimeter_top <= 0.0:
         if q > 0.0:
@@ -244,6 +264,24 @@ def integrate_boundary_layer(
         delta_top = 0.0
     else:
         delta_top = (1.5 * q / perimeter_top) ** (2.0 / 3.0)
+        if area_top > 0.0:
+            delta_top = min(delta_top, area_top / perimeter_top)
     if not np.isfinite(delta_top):
         return np.nan, np.nan, np.nan, 1
+
+    # Post-integration self-consistency (plan 2.4): refuse silent garbage.
+    # Relative tolerance 1e-6: tight enough to catch the documented multi-x
+    # V_BL overshoots, loose enough that RK4/roundoff on baseline cases never
+    # trips (suite + byte-unchanged physics baseline enforce this).
+    rel_tol = 1.0e-6
+    volume_top = eval_ppoly(top_height, height, volume_coefficients)
+    if volume_top > 0.0 and vbl > volume_top * (1.0 + rel_tol):
+        return np.nan, np.nan, np.nan, 1
+    if (
+        perimeter_top > 0.0
+        and area_top > 0.0
+        and delta_top > (area_top / perimeter_top) * (1.0 + rel_tol)
+    ):
+        return np.nan, np.nan, np.nan, 1
+
     return delta_top, vbl, q, 0

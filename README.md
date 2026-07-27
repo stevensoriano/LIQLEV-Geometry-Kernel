@@ -52,7 +52,7 @@ This project is a complete Python reimplementation of the original Fortran LIQLE
 - **Custom** — User-specified constant epsilon value
 
 ### Gravity Profiles
-- **Constant** — Fixed g-level (ft/s²)
+- **Constant** — Fixed g-level (ft/s² I/O). **AK1 correlation convention (F1):** gravity enters the buoyancy coefficient as a **dimensionless standard-g level** at the correlation boundary (heritage VBA `Ggo`), not as raw ft/s². The solver still multiplies the configured g-level by `32.174` for internal storage; the F1 correction divides by standard g inside AK1. Evidence and adjudication: [`docs/physics/gravity-units-determination.md`](docs/physics/gravity-units-determination.md).
 - **Custom Expression** — Python math expression as a function of time `t` (supports `sin`, `cos`, `exp`, `log`, `sqrt`, `pi`, etc.)
 - **CSV Profile** — Load transient acceleration data from a CSV file (e.g. drop tower, parabolic flight). If the simulation exceeds the CSV duration, the final value is held constant.
 
@@ -121,6 +121,19 @@ compatibility and are not used by the solver. The loaded geometry package
 provides the actual height, volume, interface area, perimeter, and wetted
 sidewall area.
 
+**Custom geometry is HEADLESS-ONLY (finding F18).** Neither `gui.py` nor
+`liqlev/ui_qt/app.py` exposes `geometry_path`. The GUI cylinder diameter/height
+inputs engage the **legacy analytic** path only; they do not load an NPZ package
+or enable custom-mode physics. Drive custom geometry from configuration JSON /
+`liqlev` runner APIs / validation modules.
+
+**Production LOX acceptance case.** The 43 L LOX / 40→35 psia / SSM-3 gravity
+matrix is defined in
+[`docs/lox-vent-test-definition.md`](docs/lox-vent-test-definition.md) and
+implemented under `validation/lox_vent_cases.py` with the hash-bound production
+manifest `validation/results/lox_vent_manifest.json`. Low-g BL physics notes:
+[`docs/physics/low-gravity-boundary-layer.md`](docs/physics/low-gravity-boundary-layer.md).
+
 Start with the [geometry-kernel operating guide](docs/geometry-kernel.md).
 The complete traceability set includes the
 [approved specification](docs/superpowers/specs/2026-07-23-liqlev-arbitrary-tank-geometry-design.md),
@@ -129,6 +142,91 @@ The complete traceability set includes the
 [table metadata](geometry/tables/nhq01-m21a-0201_LIQLEV_GEOMETRY.json),
 [CAD audit](geometry/audit/nhq01-m21a-0201_LIQLEV_AUDIT.json), and
 [solver result manifest](validation/results/nasa_tank_geometry_manifest.json).
+
+---
+
+## On-cluster test gating convention
+
+Standing contract for this kernel on the cryo cluster (pinned env
+`~/liqlev/conda-pin`, `MPLBACKEND=Agg`, suite
+`python -m pytest -q --ignore=tests/cad`):
+
+> **Suite green EXCEPT the frozen D1** — plus the F4 xfail tripwire as the
+> second expected non-pass marker.
+
+| Marker | Test | Why it is expected |
+|--------|------|--------------------|
+| **1 failed (D1)** | `tests/geometry/test_nasa_tank_solver.py::test_nasa_tank_result_manifest_matches_current_evidence` | Frozen NASA result manifest + 1e-15 pin on `maximum_refinement_difference`. **Lead ruling: leave RED; do not regenerate the manifest or loosen the pin in this campaign.** |
+| **1 xfailed (F4)** | `tests/geometry/test_ullage_guards.py::test_nasa_hydrogen_standin_ullage_passes_strict_guard` | Hydrogen stand-in ullage quarantine (`@pytest.mark.xfail(strict=True)`). XPASS later forces retirement of the marker. |
+
+Typical exit at tip: **148 passed / 1 failed (D1) / 1 xfailed (F4)**.
+`scripts/check_physics_baseline.py` must **PASS** with
+`validation/baselines/physics_baseline.json` **byte-unchanged** after non-baseline
+work.
+
+### Two-layer D1 analysis (why the red is legitimate)
+
+The committed NASA result manifest records (pre-F1, Windows-generated lineage,
+later re-pinned on Linux):
+
+```text
+maximum_refinement_difference = 6.371214840947442e-05
+```
+
+against `abs=1e-15` equality. Two independent layers sit under the red:
+
+1. **Physics-staleness layer (dominant after F1).** The F1 gravity-units
+   correction legitimately moved the live recomputed metric to
+   **`4.977864341653149e-05`** (measured on this cluster under the pinned env).
+   The frozen manifest still holds the pre-fix value `6.371214840947442e-05`.
+   That gap is **physics**, not noise — regenerating the manifest would be a
+   deliberate, lead-authorized baseline change, not an ambient fix.
+2. **Platform-FP layer (~1.5e-14).** Even pre-F1, Linux recomputation of the
+   same pre-fix metric differed from the Windows-committed digits by
+   ~1.56e-14 (`6.371214840947442e-05` vs `6.37121484250719e-05`) against the
+   1e-15 pin — environment finding D1 at cluster transfer, recorded in the
+   gravity-units determination appendix.
+
+**Disposition options** are recorded in the campaign supervisor report
+(`/gen/home/sasorian/cfdmate/data/liqlev-f1-verify-a1/report.md`, D1 section)
+and are **not implemented here**. Until a lead chooses one, D1 stays red by
+ruling. Do not edit the frozen manifest, the pin, or the test to “make green.”
+
+### F4 xfail (second expected non-pass)
+
+The strict ullage guard stays **strict on LOX/custom**. The NASA hydrogen
+stand-in (volume-mismatched acceptance case) is quarantined as the F4 xfail
+tripwire; the LOX 43 L case is the production replacement for ullage
+acceptance. See [`docs/lox-vent-test-definition.md`](docs/lox-vent-test-definition.md) §8.
+
+---
+
+## Opt-in Solver Status column (F10)
+
+By default the public result DataFrame is the historical **29-column** contract
+(`core._COL_NAMES`). The solver always writes an internal 30th column with
+per-step status codes; that column is **sliced off** unless explicitly enabled.
+
+**Enable** via any of:
+
+- config: `RunControls.include_solver_status = true` (field default `false`)
+- builder: `build_inputs(..., include_solver_status=True)`
+- raw inputs key: `IncludeSolverStatus: true` (case-normalized)
+
+When ON: 30 columns, name **`Solver Status`**, dtype float. Legacy
+`Conv Failed` (column index 28) is unchanged.
+
+| Code | Meaning |
+|-----:|---------|
+| 0 | ok |
+| 1 | AK3 non-convergence (bracket iteration exhausted) |
+| 2 | BL integration failure (jit status ≠ 0) |
+| 3 | volume inversion out of domain |
+| 4 | BL saturated at A/P (derived from δ_top vs A/P; no change to `integrate_boundary_layer` return contract) |
+
+Failure codes take precedence over saturation. **Default-off** is a contract:
+`check_physics_baseline.py` and the 29-column baseline remain green without
+any consumer opt-in.
 
 ## Project Structure
 

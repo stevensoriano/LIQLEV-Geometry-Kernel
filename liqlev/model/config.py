@@ -56,6 +56,13 @@ class RunControls:
     duration_s: float = 400.0
     timestep_s: float = 10.0
     threshold_dh_h0: float | None = None
+    # Fixed RK4 substeps per boundary-layer interval (custom geometry mode).
+    # Default 4 matches the historical hard-coded core.py literal (finding F7).
+    boundary_layer_substeps: int = 4
+    # F10 / guard 4.5: when True, public DataFrame gains a 30th column
+    # 'Solver Status' (float codes 0-4). Default False keeps the exact
+    # 29-column baseline contract (check_physics_baseline column equality).
+    include_solver_status: bool = False
 
 
 @dataclass(frozen=True)
