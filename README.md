@@ -134,6 +134,12 @@ implemented under `validation/lox_vent_cases.py` with the hash-bound production
 manifest `validation/results/lox_vent_manifest.json`. Low-g BL physics notes:
 [`docs/physics/low-gravity-boundary-layer.md`](docs/physics/low-gravity-boundary-layer.md).
 
+**Re-run interface.** Boundary-condition or spaceflight-condition changes rerun
+through the config-driven study runner
+(`python -m liqlev.analysis.vent_study --config configs/lox_43L_40to35_ssm3.json`)
+with the same guards, dt-plateau check, and hash-bound manifests — see
+[`docs/vent-study.md`](docs/vent-study.md).
+
 Start with the [geometry-kernel operating guide](docs/geometry-kernel.md).
 The complete traceability set includes the
 [approved specification](docs/superpowers/specs/2026-07-23-liqlev-arbitrary-tank-geometry-design.md),
