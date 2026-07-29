@@ -32,6 +32,7 @@ Importable::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import sys
@@ -44,8 +45,9 @@ import numba
 import numpy as np
 
 from liqlev.geometry.package import GeometryPackageError, load_geometry_package
+from liqlev.model.builder import G_TO_FT_S2
 from liqlev.model.config import SimulationConfig
-from liqlev.runner.single import run_single_case
+from liqlev.runner.single import PreparedGravity, run_single_case
 from validation import lox_vent_cases as lox
 
 
@@ -72,6 +74,44 @@ STANDARD_GRAVITY_M_S2 = 9.80665
 ZERO_G_ROW = "G0"
 DUTY_AVERAGE_ROW = "G1"
 PEAK_ROW = "G3"
+
+# Optional pulsed-profile row. It is *not* part of the constant-g matrix: it
+# feeds the synthesized square wave to the solver and is a model-consistency
+# experiment only (see PULSED_ROW_CAVEAT and §3 of the test definition).
+PULSED_ROW = "GP"
+CONSTANT_GRAVITY_MODE = "constant"
+PULSED_GRAVITY_MODE = "pulsed"
+
+# Printed verbatim by ``format_report`` whenever a GP row is present. ASCII
+# only and plain hyphens so it survives any console encoding untouched.
+PULSED_ROW_CAVEAT = """\
+Pulsed-profile caveat (row GP) - mandatory wherever GP is quoted
+------------------------------------------------------------------------------
+Row GP feeds the SSM-3 square wave directly to the solver: g(t) is the pulse
+train itself, not a constant level. This departs from the engineer-directed
+method of record, which treats gravity as steady state and brackets it with a
+maximum and a minimum constant level (docs/lox-vent-test-definition.md
+section 3). GP is a model-consistency experiment only. The agreed engineering
+method is unchanged and the G1-G3 constant-g bracket remains what is reported.
+
+Assumption 2 (section 5, item 2) applies with full force. LIQLEV's boundary
+layer is quasi-steady - an instantaneous function of the current state, with
+no relaxation timescale - so it cannot respond correctly to the pulse cycle.
+Driving it with the pulse train makes the model jump between a thin
+boundary-layer state during the ON interval and the saturated maximum during
+the OFF interval, within each 3.4 s cycle. That is representative of the
+acceleration history, but it is not more physical than the G1-G3 bracket.
+GP is not a validated prediction and must not be quoted as one.
+"""
+
+# Square edges are emitted as double breakpoints separated by this riser — the
+# same 1e-9 s convention the GUI uses when it extends a CSV gravity profile.
+PULSE_RISER_S = 1e-9
+
+# A timestep must resolve the ON interval with at least this many samples, and
+# should divide both the ON interval and the period to this tolerance.
+PULSE_MIN_STEPS_PER_ON = 2.0
+PULSE_DIVISION_TOLERANCE_S = 1e-9
 
 # Plan §"Re-run interface spec": dt-plateau at dt, dt/2, dt/4 (0.02/0.01/0.005).
 DT_PLATEAU_DIVISORS = (2, 4)
@@ -114,6 +154,10 @@ class SpaceflightSpec:
     ``peak_g = thrust_N / (vehicle_mass_kg * 9.80665)`` and
     ``duty_average_g = peak_g * duty_cycle`` — the arithmetic that produced the
     committed G1/G3 levels (1.60 N, 280 kg, SSM-3 120/3400 ms).
+
+    ``pulsed_row`` opts the study into the additional ``GP`` row, which feeds
+    the square wave itself to the solver; it never changes the constant-g
+    matrix. ``phase_ms`` offsets the pulse train and is only meaningful there.
     """
 
     thrust_n: float
@@ -121,6 +165,8 @@ class SpaceflightSpec:
     duty_cycle: float
     on_ms: float | None = None
     period_ms: float | None = None
+    pulsed_row: bool = False
+    phase_ms: float = 0.0
 
     @property
     def peak_g(self) -> float:
@@ -130,13 +176,27 @@ class SpaceflightSpec:
     def duty_average_g(self) -> float:
         return self.peak_g * self.duty_cycle
 
-    def as_dict(self) -> dict[str, float | None]:
+    @property
+    def on_s(self) -> float | None:
+        return None if self.on_ms is None else self.on_ms / 1000.0
+
+    @property
+    def period_s(self) -> float | None:
+        return None if self.period_ms is None else self.period_ms / 1000.0
+
+    @property
+    def phase_s(self) -> float:
+        return self.phase_ms / 1000.0
+
+    def as_dict(self) -> dict[str, float | bool | None]:
         return {
             "thrust_N": self.thrust_n,
             "vehicle_mass_kg": self.vehicle_mass_kg,
             "duty_cycle": self.duty_cycle,
             "on_ms": self.on_ms,
             "period_ms": self.period_ms,
+            "pulsed_row": self.pulsed_row,
+            "phase_ms": self.phase_ms,
             "peak_g": self.peak_g,
             "duty_average_g": self.duty_average_g,
         }
@@ -174,6 +234,12 @@ class VentStudyConfig:
     def gravity_matrix(self) -> dict[str, float]:
         return dict(self.gravity_levels)
 
+    @property
+    def has_pulsed_row(self) -> bool:
+        """True when this study also runs the pulsed-profile ``GP`` row."""
+
+        return self.spaceflight is not None and self.spaceflight.pulsed_row
+
     def row_names(self) -> tuple[str, ...]:
         return tuple(name for name, _ in self.gravity_levels)
 
@@ -190,6 +256,189 @@ def derive_gravity_levels(spec: SpaceflightSpec) -> dict[str, float]:
         DUTY_AVERAGE_ROW: spec.duty_average_g,
         PEAK_ROW: spec.peak_g,
     }
+
+
+# --------------------------------------------------------------------------
+# Pulsed-profile synthesis (row GP)
+# --------------------------------------------------------------------------
+
+
+def pulsed_gravity_table(
+    peak_g: float,
+    on_s: float,
+    period_s: float,
+    phase_s: float,
+    duration_s: float,
+    riser_s: float = PULSE_RISER_S,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Synthesize the SSM-style square wave as a solver gravity table.
+
+    The train is the infinite pulse train sampled on ``[0, duration_s]``::
+
+        g(t) = peak_g   when  ((t - phase_s) mod period_s) < on_s
+        g(t) = 0.0      otherwise
+
+    so a phase in ``(period_s - on_s, period_s)`` leaves a pulse already ON at
+    ``t = 0`` — that is intended, not an artifact. Square edges are emitted as
+    double breakpoints: at a transition ``t_e`` the table carries
+    ``(t_e, previous)`` followed by ``(t_e + riser_s, new)``, the same 1e-9 s
+    riser the GUI uses when extending a CSV gravity profile. The first node is
+    ``(0.0, g(0))`` and the last is exactly ``(duration_s, g(duration_s))``.
+
+    Returns ``(tggo, xggo)`` with ``xggo`` in **ft/s²** (``peak_g`` is a
+    standard-g level, multiplied by ``G_TO_FT_S2``), both float64 and
+    C-contiguous, with strictly increasing times.
+    """
+
+    peak_g = float(peak_g)
+    on_s = float(on_s)
+    period_s = float(period_s)
+    phase_s = float(phase_s)
+    duration_s = float(duration_s)
+    riser_s = float(riser_s)
+
+    if not np.isfinite([peak_g, on_s, period_s, phase_s, duration_s, riser_s]).all():
+        raise ValueError("pulsed_gravity_table arguments must be finite")
+    if peak_g < 0.0:
+        raise ValueError(f"peak_g must be non-negative (got {peak_g})")
+    if period_s <= 0.0:
+        raise ValueError(f"period_s must be positive (got {period_s})")
+    if on_s <= 0.0:
+        raise ValueError(f"on_s must be positive (got {on_s})")
+    if on_s > period_s:
+        raise ValueError(
+            f"on_s must not exceed period_s (got {on_s} > {period_s})"
+        )
+    if not 0.0 <= phase_s < period_s:
+        raise ValueError(
+            f"phase_s must satisfy 0 <= phase_s < period_s "
+            f"(got {phase_s} with period_s {period_s})"
+        )
+    if duration_s <= 0.0:
+        raise ValueError(f"duration_s must be positive (got {duration_s})")
+    if riser_s <= 0.0:
+        raise ValueError(f"riser_s must be positive (got {riser_s})")
+    if riser_s >= on_s or riser_s >= duration_s:
+        raise ValueError(
+            f"riser_s must be smaller than on_s and duration_s (got {riser_s})"
+        )
+
+    peak_ft_s2 = peak_g * G_TO_FT_S2
+
+    # Edge train built analytically from the pulse index rather than by a
+    # modulo of the sample time: at an exact edge the modulo can land on either
+    # side of the comparison, which would flip a breakpoint's value.
+    first_index = int(np.floor((0.0 - phase_s) / period_s)) - 1
+    last_index = int(np.ceil((duration_s - phase_s) / period_s)) + 1
+    edges: list[tuple[float, float]] = []
+    for index in range(first_index, last_index + 1):
+        rise_s = phase_s + index * period_s
+        edges.append((rise_s, peak_ft_s2))
+        if on_s < period_s:
+            edges.append((rise_s + on_s, 0.0))
+    edges.sort(key=lambda edge: edge[0])
+
+    def _value_at(time_s: float) -> float:
+        value = 0.0
+        for edge_time_s, after in edges:
+            if edge_time_s > time_s:
+                break
+            value = after
+        return value
+
+    times: list[float] = [0.0]
+    values: list[float] = [_value_at(0.0)]
+
+    def _push(time_s: float, value: float) -> None:
+        if time_s > times[-1]:
+            times.append(time_s)
+            values.append(value)
+
+    for edge_time_s, after in edges:
+        if edge_time_s <= 0.0 or edge_time_s > duration_s:
+            continue
+        before = values[-1]
+        if after == before:
+            continue
+        lead_s = edge_time_s
+        trail_s = edge_time_s + riser_s
+        if trail_s >= duration_s:
+            # Keep the last node exactly on the duration boundary.
+            lead_s = duration_s - riser_s
+            trail_s = duration_s
+        _push(lead_s, before)
+        _push(trail_s, after)
+
+    if times[-1] < duration_s:
+        _push(duration_s, _value_at(duration_s))
+    else:
+        values[-1] = _value_at(duration_s)
+
+    tggo = np.ascontiguousarray(times, dtype=np.float64)
+    xggo = np.ascontiguousarray(values, dtype=np.float64)
+    return tggo, xggo
+
+
+def pulse_table_sha256(tggo: np.ndarray, xggo: np.ndarray) -> str:
+    """SHA-256 over the raw bytes of both table arrays (provenance binding)."""
+
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(tggo, dtype=np.float64).tobytes())
+    digest.update(np.ascontiguousarray(xggo, dtype=np.float64).tobytes())
+    return digest.hexdigest().upper()
+
+
+def _divides(value_s: float, timestep_s: float) -> bool:
+    remainder = value_s % timestep_s
+    return min(remainder, timestep_s - remainder) <= PULSE_DIVISION_TOLERANCE_S
+
+
+def check_pulse_resolution(spec: SpaceflightSpec, timestep_s: float) -> None:
+    """Hard guard: the timestep must resolve the ON interval.
+
+    Fewer than two steps inside the ON interval means the square wave is not
+    represented at all, so this refuses rather than reporting a warning.
+    """
+
+    on_s = spec.on_s
+    if on_s is None:
+        return
+    timestep_s = float(timestep_s)
+    if on_s < PULSE_MIN_STEPS_PER_ON * timestep_s:
+        raise VentStudyConfigError(
+            f"pulsed row is under-resolved: on_ms {spec.on_ms:g} "
+            f"({on_s:g} s) needs at least "
+            f"{PULSE_MIN_STEPS_PER_ON:g} timesteps but timestep_s is "
+            f"{timestep_s:g} s; shorten timestep_s or drop pulsed_row"
+        )
+
+
+def pulse_timing_notes(
+    spec: SpaceflightSpec, timestep_s: float
+) -> tuple[str, ...]:
+    """Aliasing notes when the timestep does not divide the pulse timing.
+
+    The production timesteps 0.02 / 0.01 / 0.005 s all divide the SSM-3 120 ms
+    and 3400 ms exactly, so this is normally empty.
+    """
+
+    on_s = spec.on_s
+    period_s = spec.period_s
+    if on_s is None or period_s is None:
+        return ()
+    timestep_s = float(timestep_s)
+    notes: list[str] = []
+    if not _divides(on_s, timestep_s):
+        notes.append(
+            f"WARNING (aliasing): timestep {timestep_s:g} s does not divide "
+            f"on_s = {on_s:g} s; the pulse train is sampled unevenly."
+        )
+    if not _divides(period_s, timestep_s):
+        notes.append(
+            f"WARNING (aliasing): timestep {timestep_s:g} s does not divide "
+            f"period_s = {period_s:g} s; the pulse train is sampled unevenly."
+        )
+    return tuple(notes)
 
 
 def default_dt_plateau_row(levels: Sequence[tuple[str, float]]) -> str:
@@ -314,7 +563,15 @@ def _vent_rate_lbm_s(payload: Mapping[str, Any]) -> float:
 
 def _spaceflight_spec(payload: Mapping[str, Any]) -> SpaceflightSpec:
     block = _require_mapping(payload, "gravity.spaceflight")
-    allowed = {"thrust_N", "vehicle_mass_kg", "duty_cycle", "on_ms", "period_ms"}
+    allowed = {
+        "thrust_N",
+        "vehicle_mass_kg",
+        "duty_cycle",
+        "on_ms",
+        "period_ms",
+        "pulsed_row",
+        "phase_ms",
+    }
     unknown = set(block) - allowed
     if unknown:
         raise VentStudyConfigError(
@@ -331,8 +588,20 @@ def _spaceflight_spec(payload: Mapping[str, Any]) -> SpaceflightSpec:
         block["vehicle_mass_kg"], "gravity.spaceflight.vehicle_mass_kg"
     )
 
+    pulsed_row = block.get("pulsed_row", False)
+    if not isinstance(pulsed_row, bool):
+        raise VentStudyConfigError(
+            "gravity.spaceflight.pulsed_row must be true or false"
+        )
+
     has_duty = "duty_cycle" in block
     has_pulse = "on_ms" in block or "period_ms" in block
+    if pulsed_row and not has_pulse:
+        raise VentStudyConfigError(
+            "gravity.spaceflight.pulsed_row requires the 'on_ms'/'period_ms' "
+            "form: pulse timing is required to synthesize the square wave, and "
+            "'duty_cycle' alone does not define it"
+        )
     if has_duty == has_pulse:
         raise VentStudyConfigError(
             "gravity.spaceflight requires exactly one of 'duty_cycle' or the "
@@ -358,12 +627,29 @@ def _spaceflight_spec(payload: Mapping[str, Any]) -> SpaceflightSpec:
         raise VentStudyConfigError(
             f"gravity.spaceflight duty cycle {duty!r} is outside (0, 1]"
         )
+
+    if "phase_ms" in block and not pulsed_row:
+        raise VentStudyConfigError(
+            "gravity.spaceflight.phase_ms requires pulsed_row true "
+            "(the phase only shifts the synthesized pulse train)"
+        )
+    phase_ms = _positive_float(
+        block.get("phase_ms", 0.0), "gravity.spaceflight.phase_ms", allow_zero=True
+    )
+    if period_ms is not None and not 0.0 <= phase_ms < period_ms:
+        raise VentStudyConfigError(
+            "gravity.spaceflight.phase_ms must satisfy 0 <= phase_ms < "
+            f"period_ms (got {phase_ms:g} with period_ms {period_ms:g})"
+        )
+
     return SpaceflightSpec(
         thrust_n=thrust,
         vehicle_mass_kg=mass,
         duty_cycle=duty,
         on_ms=on_ms,
         period_ms=period_ms,
+        pulsed_row=pulsed_row,
+        phase_ms=phase_ms,
     )
 
 
@@ -460,6 +746,8 @@ def study_config_from_mapping(
         )
 
     levels, gravity_source, spaceflight = _gravity_block(payload["gravity"])
+    if spaceflight is not None and spaceflight.pulsed_row:
+        check_pulse_resolution(spaceflight, timestep_s)
 
     diameter_default, height_default = _geometry_tank_constants(geometry_path)
     if "tank_diameter_ft" in payload:
@@ -477,7 +765,10 @@ def study_config_from_mapping(
     if not isinstance(enabled, bool):
         raise VentStudyConfigError("dt_plateau.enabled must be true or false")
     plateau_row = plateau.get("row", default_dt_plateau_row(levels))
-    if plateau_row not in dict(levels):
+    selectable = set(dict(levels))
+    if spaceflight is not None and spaceflight.pulsed_row:
+        selectable.add(PULSED_ROW)
+    if plateau_row not in selectable:
         raise VentStudyConfigError(
             f"dt_plateau.row {plateau_row!r} is not a configured gravity level"
         )
@@ -530,23 +821,40 @@ def load_study_config(path: str | Path) -> VentStudyConfig:
 
 
 def select_rows(config: VentStudyConfig, names: Iterable[str]) -> VentStudyConfig:
-    """Return a config restricted to ``names`` (config order preserved)."""
+    """Return a config restricted to ``names`` (config order preserved).
+
+    ``GP`` is selectable exactly when the config enables the pulsed row; not
+    naming it turns that row off, so a narrowed run never smuggles it back in.
+    """
 
     wanted = list(dict.fromkeys(names))
     available = dict(config.gravity_levels)
-    missing = [name for name in wanted if name not in available]
+    defined = list(available)
+    if config.has_pulsed_row:
+        defined.append(PULSED_ROW)
+    missing = [name for name in wanted if name not in defined]
     if missing:
         raise VentStudyConfigError(
             f"unknown gravity row(s): {', '.join(missing)}; "
-            f"config defines {', '.join(available)}"
+            f"config defines {', '.join(defined)}"
         )
     levels = tuple(
         (name, value) for name, value in config.gravity_levels if name in set(wanted)
     )
+    keeps_pulsed = config.has_pulsed_row and PULSED_ROW in wanted
+    updates: dict[str, Any] = {"gravity_levels": levels}
+    if config.has_pulsed_row and not keeps_pulsed:
+        updates["spaceflight"] = replace(config.spaceflight, pulsed_row=False)
     plateau_row = config.dt_plateau_row
-    if plateau_row not in dict(levels):
-        plateau_row = default_dt_plateau_row(levels)
-    return replace(config, gravity_levels=levels, dt_plateau_row=plateau_row)
+    if plateau_row not in dict(levels) and not (
+        keeps_pulsed and plateau_row == PULSED_ROW
+    ):
+        plateau_row = (
+            PULSED_ROW if keeps_pulsed and not levels
+            else default_dt_plateau_row(levels)
+        )
+    updates["dt_plateau_row"] = plateau_row
+    return replace(config, **updates)
 
 
 # --------------------------------------------------------------------------
@@ -556,12 +864,20 @@ def select_rows(config: VentStudyConfig, names: Iterable[str]) -> VentStudyConfi
 
 @dataclass(frozen=True)
 class VentStudyRow:
-    """One gravity row: the reused summary plus the reported rise in mm."""
+    """One gravity row: the reused summary plus the reported rise in mm.
+
+    ``gravity_mode`` is ``"constant"`` for the bracketing matrix rows and
+    ``"pulsed"`` for ``GP``; ``pulse`` carries the GP profile descriptor (and
+    is ``None`` otherwise), ``notes`` any run-time timing warnings.
+    """
 
     name: str
     gravity_g: float
     rise_mm: float
     summary: lox.LoxVentSummary
+    gravity_mode: str = CONSTANT_GRAVITY_MODE
+    pulse: dict[str, Any] | None = None
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -627,23 +943,21 @@ def simulation_config_for(
     )
 
 
-def run_row(
+def _summarize_row(
     config: VentStudyConfig,
     name: str,
     gravity_g: float,
+    result,
+    timestep_s: float,
     *,
-    timestep_s: float | None = None,
-    duration_s: float | None = None,
+    gravity_mode: str = CONSTANT_GRAVITY_MODE,
+    pulse: dict[str, Any] | None = None,
+    notes: Sequence[str] = (),
 ) -> VentStudyRow:
-    """Run one gravity row and summarise it with the validation machinery."""
+    """Summarise one executed case with the validation machinery."""
 
-    timestep = config.timestep_s if timestep_s is None else float(timestep_s)
-    simulation = simulation_config_for(
-        config, gravity_g, timestep_s=timestep, duration_s=duration_s
-    )
-    result = run_single_case(simulation)
     summary = lox.summarize_lox_vent_result(
-        result, gravity_g=gravity_g, timestep_s=timestep
+        result, gravity_g=gravity_g, timestep_s=timestep_s
     )
     if abs(config.tank_height_ft - lox.TANK_TOTAL_HEIGHT_FT) > 1e-9:
         # Non-default geometry: re-assess bounds against this tank's height
@@ -659,6 +973,109 @@ def run_row(
         gravity_g=float(gravity_g),
         rise_mm=summary.dh_ft * FT_TO_MM,
         summary=summary,
+        gravity_mode=gravity_mode,
+        pulse=pulse,
+        notes=tuple(notes),
+    )
+
+
+def run_row(
+    config: VentStudyConfig,
+    name: str,
+    gravity_g: float,
+    *,
+    timestep_s: float | None = None,
+    duration_s: float | None = None,
+) -> VentStudyRow:
+    """Run one constant-gravity row and summarise it."""
+
+    timestep = config.timestep_s if timestep_s is None else float(timestep_s)
+    simulation = simulation_config_for(
+        config, gravity_g, timestep_s=timestep, duration_s=duration_s
+    )
+    result = run_single_case(simulation)
+    return _summarize_row(config, name, gravity_g, result, timestep)
+
+
+def prepare_pulsed_gravity(
+    config: VentStudyConfig, *, duration_s: float | None = None
+) -> tuple[PreparedGravity, dict[str, Any]]:
+    """Synthesize the GP gravity profile and its provenance descriptor.
+
+    The returned :class:`~liqlev.runner.single.PreparedGravity` is handed to
+    ``run_single_case`` as ``prepared_gravity``, which overrides gravity
+    entirely (``single.py``: ``gravity = prepared_gravity or prepare_gravity``),
+    so the solver integrates this table and nothing else.
+    """
+
+    spec = config.spaceflight
+    if spec is None or not spec.pulsed_row:
+        raise VentStudyConfigError(
+            "the pulsed row requires gravity.spaceflight.pulsed_row true"
+        )
+    duration = config.duration_s if duration_s is None else float(duration_s)
+    tggo, xggo = pulsed_gravity_table(
+        spec.peak_g, spec.on_s, spec.period_s, spec.phase_s, duration
+    )
+    descriptor: dict[str, Any] = {
+        "thrust_N": spec.thrust_n,
+        "vehicle_mass_kg": spec.vehicle_mass_kg,
+        "on_ms": spec.on_ms,
+        "period_ms": spec.period_ms,
+        "phase_ms": spec.phase_ms,
+        "peak_g": spec.peak_g,
+        "mean_g": spec.duty_average_g,
+        "n_table_points": int(len(tggo)),
+        "table_sha256": pulse_table_sha256(tggo, xggo),
+    }
+    message = (
+        f"Gravity: pulsed square wave {spec.on_ms:g}/{spec.period_ms:g} ms, "
+        f"phase {spec.phase_ms:g} ms, peak {spec.peak_g:.6e} g, "
+        f"mean {spec.duty_average_g:.6e} g, {len(tggo)} table points"
+    )
+    prepared = PreparedGravity(
+        nggo=int(len(tggo)), tggo=tggo, xggo=xggo, messages=(message,)
+    )
+    return prepared, descriptor
+
+
+def run_pulsed_row(
+    config: VentStudyConfig,
+    *,
+    timestep_s: float | None = None,
+    duration_s: float | None = None,
+) -> VentStudyRow:
+    """Run the pulsed-profile ``GP`` row against the synthesized square wave.
+
+    The case is built by the same :func:`simulation_config_for` path as every
+    constant row, at ``gravity_g = peak_g * duty_cycle`` — the true time mean
+    of the train. That value is bookkeeping and reporting only: the profile
+    handed to ``run_single_case`` is what the solver integrates.
+    """
+
+    spec = config.spaceflight
+    if spec is None or not spec.pulsed_row:
+        raise VentStudyConfigError(
+            "the pulsed row requires gravity.spaceflight.pulsed_row true"
+        )
+    timestep = config.timestep_s if timestep_s is None else float(timestep_s)
+    duration = config.duration_s if duration_s is None else float(duration_s)
+    check_pulse_resolution(spec, timestep)
+    prepared, descriptor = prepare_pulsed_gravity(config, duration_s=duration)
+    mean_g = descriptor["mean_g"]
+    simulation = simulation_config_for(
+        config, mean_g, timestep_s=timestep, duration_s=duration
+    )
+    result = run_single_case(simulation, prepared_gravity=prepared)
+    return _summarize_row(
+        config,
+        PULSED_ROW,
+        mean_g,
+        result,
+        timestep,
+        gravity_mode=PULSED_GRAVITY_MODE,
+        pulse=descriptor,
+        notes=pulse_timing_notes(spec, timestep),
     )
 
 
@@ -672,21 +1089,35 @@ def run_dt_plateau(
 
     ``delta_percent`` is the signed change in rise relative to the primary
     timestep, i.e. ``100 * (rise(dt_i) - rise(dt)) / rise(dt)``.
+
+    ``GP`` is accepted like any other row: the synthesized table is a function
+    of the pulse timing alone, so halving the timestep only resamples it.
     """
 
     name = config.dt_plateau_row if row is None else row
     levels = dict(config.gravity_levels)
-    if name not in levels:
+    if name == PULSED_ROW and config.has_pulsed_row:
+        gravity_g = config.spaceflight.duty_average_g
+
+        def _run(timestep_s: float | None = None) -> VentStudyRow:
+            return run_pulsed_row(config, timestep_s=timestep_s)
+
+    elif name in levels:
+        gravity_g = levels[name]
+
+        def _run(timestep_s: float | None = None) -> VentStudyRow:
+            return run_row(config, name, gravity_g, timestep_s=timestep_s)
+
+    else:
         raise VentStudyConfigError(
             f"dt-plateau row {name!r} is not a configured gravity level"
         )
-    gravity_g = levels[name]
-    base = base_row if base_row is not None else run_row(config, name, gravity_g)
+    base = base_row if base_row is not None else _run()
     base_rise = base.rise_mm
     points = [DtPlateauPoint(config.timestep_s, base_rise, 0.0)]
     for divisor in DT_PLATEAU_DIVISORS:
         timestep = config.timestep_s / divisor
-        refined = run_row(config, name, gravity_g, timestep_s=timestep)
+        refined = _run(timestep_s=timestep)
         delta = (
             100.0 * (refined.rise_mm - base_rise) / base_rise
             if base_rise not in (0.0,) and np.isfinite(base_rise)
@@ -749,6 +1180,19 @@ def run_study(
                 flush=True,
             )
         rows.append(run_row(config, name, gravity_g))
+
+    if config.has_pulsed_row:
+        spec = config.spaceflight
+        if stream is not None:
+            print(
+                f"[vent-study] running {PULSED_ROW} (pulsed square wave "
+                f"{spec.on_ms:g}/{spec.period_ms:g} ms, phase "
+                f"{spec.phase_ms:g} ms, mean g = {spec.duty_average_g:.6e}) "
+                f"dt = {config.timestep_s} s, duration = {config.duration_s} s",
+                file=stream,
+                flush=True,
+            )
+        rows.append(run_pulsed_row(config))
 
     plateau: DtPlateauReport | None = None
     if config.dt_plateau_enabled:
@@ -822,34 +1266,66 @@ def format_report(result: VentStudyResult) -> str:
             f"Spaceflight     : {spec.thrust_n:g} N / {spec.vehicle_mass_kg:g} kg, "
             f"duty {spec.duty_cycle * 100.0:.4f}%{pulse}"
         )
+    pulsed_rows = [
+        row for row in result.rows if row.gravity_mode == PULSED_GRAVITY_MODE
+    ]
+    # The mode column only appears when a pulsed row is present, so a
+    # constant-g report keeps its pre-feature layout byte for byte.
+    mode_width = 9 if pulsed_rows else 0
+    mode_header = f"{'mode':<{mode_width}} " if pulsed_rows else ""
     lines += [
         f"Versions        : python {platform.python_version()} / "
         f"numpy {np.__version__} / numba {numba.__version__}",
         "",
-        f"{'Row':<6} {'g (std)':>13} {'t_end (s)':>10} {'rise (mm)':>11} "
+        f"{'Row':<6} {mode_header}{'g (std)':>13} {'t_end (s)':>10} "
+        f"{'rise (mm)':>11} "
         f"{'dh/h0':>8} {'max AK3':>9} {'ullage':>9} {'vs 5%':>8} "
         f"{'ConvFail':>9}  physical",
-        "-" * 108,
+        "-" * (108 + mode_width + (1 if pulsed_rows else 0)),
     ]
     for row in result.rows:
         summary = row.summary
         physical = "yes" if summary.physical else (
             "NO (" + ", ".join(summary.failure_classifications) + ")"
         )
+        mode = f"{row.gravity_mode:<{mode_width}} " if pulsed_rows else ""
         lines.append(
-            f"{row.name:<6} {row.gravity_g:>13.6e} {summary.t_end_s:>10.2f} "
+            f"{row.name:<6} {mode}{row.gravity_g:>13.6e} {summary.t_end_s:>10.2f} "
             f"{row.rise_mm:>11.3f} {summary.dh_over_h0:>8.4f} "
             f"{summary.max_ak3:>9.4f} "
             f"{summary.ullage_closure_max_relative * 100.0:>8.3f}% "
             f"{_closure_verdict(summary):>8} {summary.conv_failed_total:>9d}  "
             f"{physical}"
         )
+    for row in pulsed_rows:
+        descriptor = row.pulse or {}
+        lines.append("")
+        lines.append(
+            f"Row {row.name} pulsed profile: "
+            f"{descriptor.get('on_ms', 0.0):g}/"
+            f"{descriptor.get('period_ms', 0.0):g} ms ON/period, phase "
+            f"{descriptor.get('phase_ms', 0.0):g} ms"
+        )
+        lines.append(
+            f"  peak g = {descriptor.get('peak_g', float('nan')):.6e}   "
+            f"mean g = {descriptor.get('mean_g', float('nan')):.6e} (reported "
+            "in the table above)"
+        )
+        lines.append(
+            f"  table = {descriptor.get('n_table_points', 0)} points, "
+            f"sha256 = {descriptor.get('table_sha256', '')}"
+        )
+        for note in row.notes:
+            lines.append(f"  {note}")
     lines.append("")
     lines.append(
         f"Ullage-closure acceptance gate: "
         f"{lox.ULLAGE_CLOSURE_RELATIVE_TOLERANCE * 100.0:g}% "
         "(reported, never relaxed)."
     )
+    if pulsed_rows:
+        lines.append("")
+        lines.append(PULSED_ROW_CAVEAT.rstrip("\n"))
 
     plateau = result.dt_plateau
     lines.append("")
@@ -915,6 +1391,12 @@ def _row_manifest(row: VentStudyRow) -> dict[str, Any]:
     # for field; only the reported rise in mm is added here.
     payload.update(lox._summary_manifest(row.summary))
     payload["rise_mm"] = lox._finite_or_none(row.rise_mm)
+    payload["gravity_mode"] = row.gravity_mode
+    if row.pulse is not None:
+        # sha256 over the raw table bytes binds the profile the solver saw.
+        payload["pulse"] = dict(row.pulse)
+    if row.notes:
+        payload["notes"] = list(row.notes)
     return payload
 
 
@@ -1090,6 +1572,8 @@ def _apply_overrides(
             f"timestep_s ({config.timestep_s}) must be smaller than duration_s "
             f"({config.duration_s})"
         )
+    if config.has_pulsed_row:
+        check_pulse_resolution(config.spaceflight, config.timestep_s)
     return config
 
 
