@@ -15,16 +15,28 @@ import pytest
 
 from liqlev.analysis import vent_study
 from liqlev.analysis.vent_study import (
+    PULSED_GRAVITY_MODE,
     PULSED_ROW,
+    PULSED_ROW_CAVEAT,
     SpaceflightSpec,
     VentStudyConfigError,
+    format_report,
     load_study_config,
+    prepare_pulsed_gravity,
     pulse_table_sha256,
     pulse_timing_notes,
     pulsed_gravity_table,
+    read_assumptions_block,
+    run_dt_plateau,
+    run_pulsed_row,
+    run_row,
+    run_study,
+    select_rows,
     study_config_from_mapping,
+    write_manifest,
 )
 from liqlev.model.builder import G_TO_FT_S2
+from liqlev.runner.single import PreparedGravity
 from validation import lox_vent_cases as lox
 
 
@@ -65,6 +77,59 @@ def spaceflight_payload(**block: object) -> dict[str, object]:
     """Base payload whose gravity block is the given spaceflight mapping."""
 
     return base_payload(gravity={"spaceflight": block})
+
+
+def synthetic_summary(gravity_g: float) -> lox.LoxVentSummary:
+    """A plausible summary built without running the solver."""
+
+    return lox.LoxVentSummary(
+        gravity_g=gravity_g,
+        timestep_s=0.02,
+        rows=2,
+        t_end_s=0.04,
+        p_end_psia=39.9,
+        h_initial_ft=lox.INITIAL_HEIGHT_FT,
+        h_final_ft=lox.INITIAL_HEIGHT_FT + 1e-4,
+        dh_ft=1e-4,
+        dh_over_h0=1e-4 / lox.INITIAL_HEIGHT_FT,
+        final_vbl_vol_ft3=0.01,
+        final_bl_thick_ft=0.001,
+        max_ak3=0.05,
+        conv_failed_total=0,
+        ullage_closure_max_relative=0.01,
+        finite=True,
+        ullage_closure_within_tolerance=True,
+        physical=True,
+        failure_classifications=(),
+    )
+
+
+def synthetic_pulsed_result(**overrides: object):
+    """A two-row result (constant G3 plus GP) with no solver run."""
+
+    config = study_config_from_mapping(base_payload(**overrides))
+    spec = config.spaceflight
+    _, descriptor = prepare_pulsed_gravity(config)
+    constant = vent_study.VentStudyRow(
+        name="G3",
+        gravity_g=spec.peak_g,
+        rise_mm=1e-4 * vent_study.FT_TO_MM,
+        summary=synthetic_summary(spec.peak_g),
+    )
+    pulsed = vent_study.VentStudyRow(
+        name=PULSED_ROW,
+        gravity_g=spec.duty_average_g,
+        rise_mm=2e-4 * vent_study.FT_TO_MM,
+        summary=synthetic_summary(spec.duty_average_g),
+        gravity_mode=PULSED_GRAVITY_MODE,
+        pulse=descriptor,
+    )
+    return vent_study.VentStudyResult(
+        config=config,
+        rows=(constant, pulsed),
+        dt_plateau=None,
+        assumptions=read_assumptions_block(),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -357,3 +422,290 @@ def test_aliasing_note_fires_only_when_the_timestep_does_not_divide() -> None:
     for note in notes:
         assert "aliasing" in note
         assert note.isascii()
+
+
+# --------------------------------------------------------------------------
+# Row selection and plateau wiring
+# --------------------------------------------------------------------------
+
+
+def test_select_rows_treats_the_pulsed_row_as_selectable() -> None:
+    config = study_config_from_mapping(base_payload())
+
+    both = select_rows(config, ["G3", PULSED_ROW])
+    assert both.row_names() == ("G3",)
+    assert both.has_pulsed_row is True
+
+    constants_only = select_rows(config, ["G0", "G3"])
+    assert constants_only.row_names() == ("G0", "G3")
+    assert constants_only.has_pulsed_row is False
+
+    pulsed_only = select_rows(config, [PULSED_ROW])
+    assert pulsed_only.row_names() == ()
+    assert pulsed_only.has_pulsed_row is True
+    assert pulsed_only.dt_plateau_row == PULSED_ROW
+
+
+def test_pulsed_row_is_not_selectable_without_pulsed_row_true() -> None:
+    config = study_config_from_mapping(
+        spaceflight_payload(
+            thrust_N=1.60, vehicle_mass_kg=280.0, on_ms=120.0, period_ms=3400.0
+        )
+    )
+    with pytest.raises(VentStudyConfigError, match="unknown gravity row"):
+        select_rows(config, [PULSED_ROW])
+
+
+def test_dt_plateau_row_may_name_the_pulsed_row() -> None:
+    config = study_config_from_mapping(
+        base_payload(dt_plateau={"enabled": True, "row": PULSED_ROW})
+    )
+    assert config.dt_plateau_row == PULSED_ROW
+
+    with pytest.raises(VentStudyConfigError, match="not a configured gravity level"):
+        study_config_from_mapping(
+            spaceflight_payload(
+                thrust_N=1.60,
+                vehicle_mass_kg=280.0,
+                on_ms=120.0,
+                period_ms=3400.0,
+            )
+            | {"dt_plateau": {"enabled": True, "row": PULSED_ROW}}
+        )
+
+
+# --------------------------------------------------------------------------
+# GP execution (bounded)
+# --------------------------------------------------------------------------
+
+
+def test_gp_row_feeds_the_synthesized_table_to_the_solver(monkeypatch) -> None:
+    """The solver sees the square wave itself; result.inputs proves it."""
+
+    config = study_config_from_mapping(base_payload())
+    spec = config.spaceflight
+    expected_t, expected_x = pulsed_gravity_table(
+        spec.peak_g, 0.12, 3.4, 0.0, config.duration_s
+    )
+
+    captured: dict[str, object] = {}
+    real_run = vent_study.run_single_case
+
+    def spy(simulation, **kwargs):
+        captured["prepared"] = kwargs.get("prepared_gravity")
+        result = real_run(simulation, **kwargs)
+        captured["result"] = result
+        captured["simulation"] = simulation
+        return result
+
+    monkeypatch.setattr(vent_study, "run_single_case", spy)
+    row = run_pulsed_row(config)
+
+    prepared = captured["prepared"]
+    assert isinstance(prepared, PreparedGravity)
+    assert prepared.nggo == len(expected_t)
+    assert prepared.gravity_function is None
+    assert prepared.messages and "pulsed" in prepared.messages[0]
+
+    # The builder echoes Tggo/Xggo into result.inputs: that echo is the
+    # provenance truth for the gravity the solver actually integrated.
+    inputs = captured["result"].inputs
+    assert np.array_equal(inputs["Tggo"], expected_t)
+    assert np.array_equal(inputs["Xggo"], expected_x)
+    assert inputs["Nggo"] == len(expected_t)
+
+    # The constant-g bookkeeping value is the true time mean, not the peak.
+    assert captured["simulation"].gravity.constant_g == spec.duty_average_g
+
+    assert row.name == PULSED_ROW
+    assert row.gravity_mode == PULSED_GRAVITY_MODE
+    assert row.gravity_g == spec.duty_average_g
+    assert row.notes == ()
+    assert row.pulse == {
+        "thrust_N": 1.60,
+        "vehicle_mass_kg": 280.0,
+        "on_ms": 120.0,
+        "period_ms": 3400.0,
+        "phase_ms": 0.0,
+        "peak_g": spec.peak_g,
+        "mean_g": spec.duty_average_g,
+        "n_table_points": len(expected_t),
+        "table_sha256": pulse_table_sha256(expected_t, expected_x),
+    }
+    assert row.summary.finite
+    assert row.summary.conv_failed_total == 0
+
+
+def test_run_study_appends_the_pulsed_row_after_the_constant_rows() -> None:
+    config = select_rows(study_config_from_mapping(base_payload()), ["G3", PULSED_ROW])
+    result = run_study(config)
+
+    assert [row.name for row in result.rows] == ["G3", PULSED_ROW]
+    assert [row.gravity_mode for row in result.rows] == ["constant", "pulsed"]
+    assert result.rows[1].pulse is not None
+    assert result.dt_plateau is None
+
+
+def test_dt_plateau_accepts_the_pulsed_row() -> None:
+    config = select_rows(
+        study_config_from_mapping(
+            base_payload(dt_plateau={"enabled": True, "row": PULSED_ROW})
+        ),
+        [PULSED_ROW],
+    )
+    plateau = run_dt_plateau(config)
+
+    assert plateau.row == PULSED_ROW
+    assert plateau.gravity_g == config.spaceflight.duty_average_g
+    assert [point.timestep_s for point in plateau.points] == pytest.approx(
+        [0.02, 0.01, 0.005]
+    )
+    assert all(np.isfinite(point.rise_mm) for point in plateau.points)
+    assert plateau.points[0].delta_percent == 0.0
+
+
+def test_gp_rows_are_deterministic() -> None:
+    config = study_config_from_mapping(base_payload())
+
+    first = run_pulsed_row(config)
+    second = run_pulsed_row(config)
+
+    assert first.rise_mm == second.rise_mm
+    assert first.summary == second.summary
+    assert first.pulse == second.pulse
+
+
+def test_full_duty_pulsed_row_reproduces_the_constant_peak_row() -> None:
+    """Physics tripwire: a 100% duty square wave is the constant-g case.
+
+    on_ms == period_ms makes the synthesized table constant at the peak, so the
+    profile path must return the constant-g result with no arithmetic drift.
+    """
+
+    config = study_config_from_mapping(
+        base_payload(
+            duration_s=2.0,
+            gravity={
+                "spaceflight": {
+                    "thrust_N": 1.60,
+                    "vehicle_mass_kg": 280.0,
+                    "on_ms": 120.0,
+                    "period_ms": 120.0,
+                    "pulsed_row": True,
+                }
+            },
+        )
+    )
+    spec = config.spaceflight
+    assert spec.duty_cycle == 1.0
+    assert spec.duty_average_g == spec.peak_g
+
+    constant = run_row(config, "G3", spec.peak_g)
+    pulsed = run_pulsed_row(config)
+
+    assert pulsed.pulse["n_table_points"] == 2
+    assert pulsed.gravity_g == constant.gravity_g
+    assert pulsed.rise_mm == constant.rise_mm  # bitwise
+    assert pulsed.summary.dh_ft == constant.summary.dh_ft
+    assert pulsed.summary.h_final_ft == pytest.approx(
+        constant.summary.h_final_ft, rel=1e-15
+    )
+    assert pulsed.summary.max_ak3 == constant.summary.max_ak3
+
+
+# --------------------------------------------------------------------------
+# Report caveat and manifest
+# --------------------------------------------------------------------------
+
+
+def test_report_marks_the_pulsed_row_and_prints_the_mandatory_caveat() -> None:
+    result = synthetic_pulsed_result()
+    report = format_report(result)
+    descriptor = result.rows[1].pulse
+
+    assert PULSED_ROW_CAVEAT in report  # verbatim, not a paraphrase
+    assert PULSED_ROW_CAVEAT.isascii()
+    assert "—" not in PULSED_ROW_CAVEAT
+    for phrase in (
+        "SSM-3 square wave",
+        "model-consistency experiment",
+        "docs/lox-vent-test-definition.md",
+        "section 3",
+        "quasi-steady",
+        "no relaxation timescale",
+        "3.4 s cycle",
+        "G1-G3",
+        "not a validated prediction",
+    ):
+        assert phrase in PULSED_ROW_CAVEAT
+
+    # The matrix table marks the mode and both g levels are visible.
+    assert "mode" in report
+    assert f"{PULSED_ROW:<6} {'pulsed':<9}" in report
+    assert f"{'G3':<6} {'constant':<9}" in report
+    assert f"peak g = {descriptor['peak_g']:.6e}" in report
+    assert f"mean g = {descriptor['mean_g']:.6e}" in report
+    assert descriptor["table_sha256"] in report
+    assert f"{descriptor['n_table_points']} points" in report
+
+
+def test_constant_only_reports_are_unchanged_by_the_feature() -> None:
+    result = synthetic_pulsed_result()
+    constant_only = vent_study.VentStudyResult(
+        config=result.config,
+        rows=(result.rows[0],),
+        dt_plateau=None,
+        assumptions=result.assumptions,
+    )
+    report = format_report(constant_only)
+
+    assert PULSED_ROW_CAVEAT not in report
+    assert "pulsed profile" not in report
+    # No mode column: the header keeps its pre-feature layout.
+    assert f"{'Row':<6} {'g (std)':>13}" in report
+
+
+def test_manifest_carries_the_pulse_descriptor(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(vent_study, "_git_worktree_is_dirty", lambda: False)
+    monkeypatch.setattr(vent_study, "_git_describe", lambda: "test-describe")
+    result = synthetic_pulsed_result()
+    target = tmp_path / "pulsed_manifest.json"
+
+    payload = write_manifest(result, target)
+    on_disk = json.loads(target.read_text(encoding="utf-8"))
+    assert on_disk == payload
+
+    constant_row = payload["results"]["G3"]
+    assert constant_row["gravity_mode"] == "constant"
+    assert "pulse" not in constant_row
+
+    pulsed_row = payload["results"][PULSED_ROW]
+    assert pulsed_row["gravity_mode"] == "pulsed"
+    assert pulsed_row["pulse"] == result.rows[1].pulse
+    assert pulsed_row["pulse"]["table_sha256"] == result.rows[1].pulse["table_sha256"]
+    assert pulsed_row["gravity_g"] == result.config.spaceflight.duty_average_g
+
+    spaceflight = payload["case_definition"]["spaceflight"]
+    assert spaceflight["pulsed_row"] is True
+    assert spaceflight["phase_ms"] == 0.0
+    # The pulsed row never joins the constant-g matrix.
+    assert list(payload["case_definition"]["gravity_matrix_g"]) == ["G0", "G1", "G3"]
+
+
+def test_docs_record_the_pulsed_capability() -> None:
+    vent_doc = (vent_study.ROOT / "docs" / "vent-study.md").read_text(
+        encoding="utf-8"
+    )
+    definition = (
+        vent_study.ROOT / "docs" / "lox-vent-test-definition.md"
+    ).read_text(encoding="utf-8")
+
+    assert "pulsed_row" in vent_doc
+    assert "phase_ms" in vent_doc
+    assert "GP" in vent_doc
+    # §6 carries the dated additive note; §3 stays the method of record.
+    deferred = definition.split("## 6. Deferred / not yet in scope")[1].split("## 7.")[
+        0
+    ]
+    assert "2026-07-29" in deferred
+    assert "feature/pulsed-gravity" in deferred

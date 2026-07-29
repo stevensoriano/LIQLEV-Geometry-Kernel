@@ -246,6 +246,12 @@ These eight items are **verbatim-faithful** to the review-branch definition §5
   thrusting, then 10 s post-vent thrusting.
 - Helium pressurization. Current assumption is autogenous GOX only.
 
+**2026-07-29 (`feature/pulsed-gravity`), additive note.** A pulsed-profile
+capability now exists in the vent-study harness: an optional `GP` row feeds the
+SSM-3 square-wave acceleration history directly to the solver. It is a
+model-consistency experiment only — the agreed steady-state bracketing method
+of §3 is unchanged, and §5 item 2 applies to anything it produces.
+
 ---
 
 ## 7. Production G0–G4 matrix (rate-scaled gate) — supersedes pre-fix anchors
