@@ -32,6 +32,7 @@ Importable::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import sys
@@ -44,6 +45,7 @@ import numba
 import numpy as np
 
 from liqlev.geometry.package import GeometryPackageError, load_geometry_package
+from liqlev.model.builder import G_TO_FT_S2
 from liqlev.model.config import SimulationConfig
 from liqlev.runner.single import run_single_case
 from validation import lox_vent_cases as lox
@@ -72,6 +74,20 @@ STANDARD_GRAVITY_M_S2 = 9.80665
 ZERO_G_ROW = "G0"
 DUTY_AVERAGE_ROW = "G1"
 PEAK_ROW = "G3"
+
+# Optional pulsed-profile row. It is *not* part of the constant-g matrix: it
+# feeds the synthesized square wave to the solver and is a model-consistency
+# experiment only (see PULSED_ROW_CAVEAT and §3 of the test definition).
+PULSED_ROW = "GP"
+
+# Square edges are emitted as double breakpoints separated by this riser — the
+# same 1e-9 s convention the GUI uses when it extends a CSV gravity profile.
+PULSE_RISER_S = 1e-9
+
+# A timestep must resolve the ON interval with at least this many samples, and
+# should divide both the ON interval and the period to this tolerance.
+PULSE_MIN_STEPS_PER_ON = 2.0
+PULSE_DIVISION_TOLERANCE_S = 1e-9
 
 # Plan §"Re-run interface spec": dt-plateau at dt, dt/2, dt/4 (0.02/0.01/0.005).
 DT_PLATEAU_DIVISORS = (2, 4)
@@ -114,6 +130,10 @@ class SpaceflightSpec:
     ``peak_g = thrust_N / (vehicle_mass_kg * 9.80665)`` and
     ``duty_average_g = peak_g * duty_cycle`` — the arithmetic that produced the
     committed G1/G3 levels (1.60 N, 280 kg, SSM-3 120/3400 ms).
+
+    ``pulsed_row`` opts the study into the additional ``GP`` row, which feeds
+    the square wave itself to the solver; it never changes the constant-g
+    matrix. ``phase_ms`` offsets the pulse train and is only meaningful there.
     """
 
     thrust_n: float
@@ -121,6 +141,8 @@ class SpaceflightSpec:
     duty_cycle: float
     on_ms: float | None = None
     period_ms: float | None = None
+    pulsed_row: bool = False
+    phase_ms: float = 0.0
 
     @property
     def peak_g(self) -> float:
@@ -130,13 +152,27 @@ class SpaceflightSpec:
     def duty_average_g(self) -> float:
         return self.peak_g * self.duty_cycle
 
-    def as_dict(self) -> dict[str, float | None]:
+    @property
+    def on_s(self) -> float | None:
+        return None if self.on_ms is None else self.on_ms / 1000.0
+
+    @property
+    def period_s(self) -> float | None:
+        return None if self.period_ms is None else self.period_ms / 1000.0
+
+    @property
+    def phase_s(self) -> float:
+        return self.phase_ms / 1000.0
+
+    def as_dict(self) -> dict[str, float | bool | None]:
         return {
             "thrust_N": self.thrust_n,
             "vehicle_mass_kg": self.vehicle_mass_kg,
             "duty_cycle": self.duty_cycle,
             "on_ms": self.on_ms,
             "period_ms": self.period_ms,
+            "pulsed_row": self.pulsed_row,
+            "phase_ms": self.phase_ms,
             "peak_g": self.peak_g,
             "duty_average_g": self.duty_average_g,
         }
@@ -174,6 +210,12 @@ class VentStudyConfig:
     def gravity_matrix(self) -> dict[str, float]:
         return dict(self.gravity_levels)
 
+    @property
+    def has_pulsed_row(self) -> bool:
+        """True when this study also runs the pulsed-profile ``GP`` row."""
+
+        return self.spaceflight is not None and self.spaceflight.pulsed_row
+
     def row_names(self) -> tuple[str, ...]:
         return tuple(name for name, _ in self.gravity_levels)
 
@@ -190,6 +232,189 @@ def derive_gravity_levels(spec: SpaceflightSpec) -> dict[str, float]:
         DUTY_AVERAGE_ROW: spec.duty_average_g,
         PEAK_ROW: spec.peak_g,
     }
+
+
+# --------------------------------------------------------------------------
+# Pulsed-profile synthesis (row GP)
+# --------------------------------------------------------------------------
+
+
+def pulsed_gravity_table(
+    peak_g: float,
+    on_s: float,
+    period_s: float,
+    phase_s: float,
+    duration_s: float,
+    riser_s: float = PULSE_RISER_S,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Synthesize the SSM-style square wave as a solver gravity table.
+
+    The train is the infinite pulse train sampled on ``[0, duration_s]``::
+
+        g(t) = peak_g   when  ((t - phase_s) mod period_s) < on_s
+        g(t) = 0.0      otherwise
+
+    so a phase in ``(period_s - on_s, period_s)`` leaves a pulse already ON at
+    ``t = 0`` — that is intended, not an artifact. Square edges are emitted as
+    double breakpoints: at a transition ``t_e`` the table carries
+    ``(t_e, previous)`` followed by ``(t_e + riser_s, new)``, the same 1e-9 s
+    riser the GUI uses when extending a CSV gravity profile. The first node is
+    ``(0.0, g(0))`` and the last is exactly ``(duration_s, g(duration_s))``.
+
+    Returns ``(tggo, xggo)`` with ``xggo`` in **ft/s²** (``peak_g`` is a
+    standard-g level, multiplied by ``G_TO_FT_S2``), both float64 and
+    C-contiguous, with strictly increasing times.
+    """
+
+    peak_g = float(peak_g)
+    on_s = float(on_s)
+    period_s = float(period_s)
+    phase_s = float(phase_s)
+    duration_s = float(duration_s)
+    riser_s = float(riser_s)
+
+    if not np.isfinite([peak_g, on_s, period_s, phase_s, duration_s, riser_s]).all():
+        raise ValueError("pulsed_gravity_table arguments must be finite")
+    if peak_g < 0.0:
+        raise ValueError(f"peak_g must be non-negative (got {peak_g})")
+    if period_s <= 0.0:
+        raise ValueError(f"period_s must be positive (got {period_s})")
+    if on_s <= 0.0:
+        raise ValueError(f"on_s must be positive (got {on_s})")
+    if on_s > period_s:
+        raise ValueError(
+            f"on_s must not exceed period_s (got {on_s} > {period_s})"
+        )
+    if not 0.0 <= phase_s < period_s:
+        raise ValueError(
+            f"phase_s must satisfy 0 <= phase_s < period_s "
+            f"(got {phase_s} with period_s {period_s})"
+        )
+    if duration_s <= 0.0:
+        raise ValueError(f"duration_s must be positive (got {duration_s})")
+    if riser_s <= 0.0:
+        raise ValueError(f"riser_s must be positive (got {riser_s})")
+    if riser_s >= on_s or riser_s >= duration_s:
+        raise ValueError(
+            f"riser_s must be smaller than on_s and duration_s (got {riser_s})"
+        )
+
+    peak_ft_s2 = peak_g * G_TO_FT_S2
+
+    # Edge train built analytically from the pulse index rather than by a
+    # modulo of the sample time: at an exact edge the modulo can land on either
+    # side of the comparison, which would flip a breakpoint's value.
+    first_index = int(np.floor((0.0 - phase_s) / period_s)) - 1
+    last_index = int(np.ceil((duration_s - phase_s) / period_s)) + 1
+    edges: list[tuple[float, float]] = []
+    for index in range(first_index, last_index + 1):
+        rise_s = phase_s + index * period_s
+        edges.append((rise_s, peak_ft_s2))
+        if on_s < period_s:
+            edges.append((rise_s + on_s, 0.0))
+    edges.sort(key=lambda edge: edge[0])
+
+    def _value_at(time_s: float) -> float:
+        value = 0.0
+        for edge_time_s, after in edges:
+            if edge_time_s > time_s:
+                break
+            value = after
+        return value
+
+    times: list[float] = [0.0]
+    values: list[float] = [_value_at(0.0)]
+
+    def _push(time_s: float, value: float) -> None:
+        if time_s > times[-1]:
+            times.append(time_s)
+            values.append(value)
+
+    for edge_time_s, after in edges:
+        if edge_time_s <= 0.0 or edge_time_s > duration_s:
+            continue
+        before = values[-1]
+        if after == before:
+            continue
+        lead_s = edge_time_s
+        trail_s = edge_time_s + riser_s
+        if trail_s >= duration_s:
+            # Keep the last node exactly on the duration boundary.
+            lead_s = duration_s - riser_s
+            trail_s = duration_s
+        _push(lead_s, before)
+        _push(trail_s, after)
+
+    if times[-1] < duration_s:
+        _push(duration_s, _value_at(duration_s))
+    else:
+        values[-1] = _value_at(duration_s)
+
+    tggo = np.ascontiguousarray(times, dtype=np.float64)
+    xggo = np.ascontiguousarray(values, dtype=np.float64)
+    return tggo, xggo
+
+
+def pulse_table_sha256(tggo: np.ndarray, xggo: np.ndarray) -> str:
+    """SHA-256 over the raw bytes of both table arrays (provenance binding)."""
+
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(tggo, dtype=np.float64).tobytes())
+    digest.update(np.ascontiguousarray(xggo, dtype=np.float64).tobytes())
+    return digest.hexdigest().upper()
+
+
+def _divides(value_s: float, timestep_s: float) -> bool:
+    remainder = value_s % timestep_s
+    return min(remainder, timestep_s - remainder) <= PULSE_DIVISION_TOLERANCE_S
+
+
+def check_pulse_resolution(spec: SpaceflightSpec, timestep_s: float) -> None:
+    """Hard guard: the timestep must resolve the ON interval.
+
+    Fewer than two steps inside the ON interval means the square wave is not
+    represented at all, so this refuses rather than reporting a warning.
+    """
+
+    on_s = spec.on_s
+    if on_s is None:
+        return
+    timestep_s = float(timestep_s)
+    if on_s < PULSE_MIN_STEPS_PER_ON * timestep_s:
+        raise VentStudyConfigError(
+            f"pulsed row is under-resolved: on_ms {spec.on_ms:g} "
+            f"({on_s:g} s) needs at least "
+            f"{PULSE_MIN_STEPS_PER_ON:g} timesteps but timestep_s is "
+            f"{timestep_s:g} s; shorten timestep_s or drop pulsed_row"
+        )
+
+
+def pulse_timing_notes(
+    spec: SpaceflightSpec, timestep_s: float
+) -> tuple[str, ...]:
+    """Aliasing notes when the timestep does not divide the pulse timing.
+
+    The production timesteps 0.02 / 0.01 / 0.005 s all divide the SSM-3 120 ms
+    and 3400 ms exactly, so this is normally empty.
+    """
+
+    on_s = spec.on_s
+    period_s = spec.period_s
+    if on_s is None or period_s is None:
+        return ()
+    timestep_s = float(timestep_s)
+    notes: list[str] = []
+    if not _divides(on_s, timestep_s):
+        notes.append(
+            f"WARNING (aliasing): timestep {timestep_s:g} s does not divide "
+            f"on_s = {on_s:g} s; the pulse train is sampled unevenly."
+        )
+    if not _divides(period_s, timestep_s):
+        notes.append(
+            f"WARNING (aliasing): timestep {timestep_s:g} s does not divide "
+            f"period_s = {period_s:g} s; the pulse train is sampled unevenly."
+        )
+    return tuple(notes)
 
 
 def default_dt_plateau_row(levels: Sequence[tuple[str, float]]) -> str:
@@ -314,7 +539,15 @@ def _vent_rate_lbm_s(payload: Mapping[str, Any]) -> float:
 
 def _spaceflight_spec(payload: Mapping[str, Any]) -> SpaceflightSpec:
     block = _require_mapping(payload, "gravity.spaceflight")
-    allowed = {"thrust_N", "vehicle_mass_kg", "duty_cycle", "on_ms", "period_ms"}
+    allowed = {
+        "thrust_N",
+        "vehicle_mass_kg",
+        "duty_cycle",
+        "on_ms",
+        "period_ms",
+        "pulsed_row",
+        "phase_ms",
+    }
     unknown = set(block) - allowed
     if unknown:
         raise VentStudyConfigError(
@@ -331,8 +564,20 @@ def _spaceflight_spec(payload: Mapping[str, Any]) -> SpaceflightSpec:
         block["vehicle_mass_kg"], "gravity.spaceflight.vehicle_mass_kg"
     )
 
+    pulsed_row = block.get("pulsed_row", False)
+    if not isinstance(pulsed_row, bool):
+        raise VentStudyConfigError(
+            "gravity.spaceflight.pulsed_row must be true or false"
+        )
+
     has_duty = "duty_cycle" in block
     has_pulse = "on_ms" in block or "period_ms" in block
+    if pulsed_row and not has_pulse:
+        raise VentStudyConfigError(
+            "gravity.spaceflight.pulsed_row requires the 'on_ms'/'period_ms' "
+            "form: pulse timing is required to synthesize the square wave, and "
+            "'duty_cycle' alone does not define it"
+        )
     if has_duty == has_pulse:
         raise VentStudyConfigError(
             "gravity.spaceflight requires exactly one of 'duty_cycle' or the "
@@ -358,12 +603,29 @@ def _spaceflight_spec(payload: Mapping[str, Any]) -> SpaceflightSpec:
         raise VentStudyConfigError(
             f"gravity.spaceflight duty cycle {duty!r} is outside (0, 1]"
         )
+
+    if "phase_ms" in block and not pulsed_row:
+        raise VentStudyConfigError(
+            "gravity.spaceflight.phase_ms requires pulsed_row true "
+            "(the phase only shifts the synthesized pulse train)"
+        )
+    phase_ms = _positive_float(
+        block.get("phase_ms", 0.0), "gravity.spaceflight.phase_ms", allow_zero=True
+    )
+    if period_ms is not None and not 0.0 <= phase_ms < period_ms:
+        raise VentStudyConfigError(
+            "gravity.spaceflight.phase_ms must satisfy 0 <= phase_ms < "
+            f"period_ms (got {phase_ms:g} with period_ms {period_ms:g})"
+        )
+
     return SpaceflightSpec(
         thrust_n=thrust,
         vehicle_mass_kg=mass,
         duty_cycle=duty,
         on_ms=on_ms,
         period_ms=period_ms,
+        pulsed_row=pulsed_row,
+        phase_ms=phase_ms,
     )
 
 
@@ -460,6 +722,8 @@ def study_config_from_mapping(
         )
 
     levels, gravity_source, spaceflight = _gravity_block(payload["gravity"])
+    if spaceflight is not None and spaceflight.pulsed_row:
+        check_pulse_resolution(spaceflight, timestep_s)
 
     diameter_default, height_default = _geometry_tank_constants(geometry_path)
     if "tank_diameter_ft" in payload:
@@ -477,7 +741,10 @@ def study_config_from_mapping(
     if not isinstance(enabled, bool):
         raise VentStudyConfigError("dt_plateau.enabled must be true or false")
     plateau_row = plateau.get("row", default_dt_plateau_row(levels))
-    if plateau_row not in dict(levels):
+    selectable = set(dict(levels))
+    if spaceflight is not None and spaceflight.pulsed_row:
+        selectable.add(PULSED_ROW)
+    if plateau_row not in selectable:
         raise VentStudyConfigError(
             f"dt_plateau.row {plateau_row!r} is not a configured gravity level"
         )
@@ -1090,6 +1357,8 @@ def _apply_overrides(
             f"timestep_s ({config.timestep_s}) must be smaller than duration_s "
             f"({config.duration_s})"
         )
+    if config.has_pulsed_row:
+        check_pulse_resolution(config.spaceflight, config.timestep_s)
     return config
 
 
