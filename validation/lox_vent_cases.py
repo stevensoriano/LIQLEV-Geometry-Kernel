@@ -11,6 +11,11 @@ Phase 4.1 wires ``ULLAGE_CLOSURE_RELATIVE_TOLERANCE`` (5%) through
 ``LoxVentSummary`` (``ullage_closure_within_tolerance``, ``physical``,
 ``failure_classifications``). The residual itself is computed only by
 ``ullage_closure_metric``.
+
+``film_drift_metric`` adds a second F4-class measurement — the wall-film mass
+drift — reported alongside the closure residual and deliberately wired to NO
+acceptance predicate (``docs/lox-vent-test-definition.md`` §5 item 6: magnitude
+reported per run, never assumed small).
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import json
 import platform
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -37,6 +43,7 @@ from liqlev.model.config import (
     VentProfileConfig,
 )
 from liqlev.runner.single import SingleCaseResult, run_single_case
+from thermo_utils import build_property_table
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +117,12 @@ class LoxVentSummary:
     ullage_closure_within_tolerance: bool
     physical: bool
     failure_classifications: tuple[str, ...]
+    # REPORTED, NOT GATED — wall-film mass drift (:func:`film_drift_metric`).
+    # Deliberately wired to no acceptance predicate; see that function.
+    film_retention_lbm: float
+    film_eos_inventory_lbm: float
+    film_drift_lbm: float
+    film_drift_over_inventory: float
 
 
 def sha256_file(path: str | Path) -> str:
@@ -186,6 +199,131 @@ def ullage_closure_metric(dataframe: pd.DataFrame) -> float:
     if not np.any(np.isfinite(relative)):
         return float("nan")
     return float(np.nanmax(relative))
+
+
+@dataclass(frozen=True)
+class FilmDriftMetric:
+    """Endpoint wall-film mass drift for one run (lbm, plus the ratio).
+
+    ``film_drift_lbm = film_retention_lbm - film_eos_inventory_lbm`` and
+    ``film_drift_over_inventory`` is that drift divided by the inventory (a
+    fraction, not a percent). All four are NaN together when the run state
+    needed to reconstruct them is unavailable.
+    """
+
+    film_retention_lbm: float
+    film_eos_inventory_lbm: float
+    film_drift_lbm: float
+    film_drift_over_inventory: float
+
+
+_UNAVAILABLE_FILM_DRIFT = FilmDriftMetric(
+    film_retention_lbm=float("nan"),
+    film_eos_inventory_lbm=float("nan"),
+    film_drift_lbm=float("nan"),
+    film_drift_over_inventory=float("nan"),
+)
+
+
+@lru_cache(maxsize=8)
+def _saturated_vapor_density_table(
+    fluid: str, final_pressure_psia: float, initial_pressure_psia: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Memoized ``(temperature_R, rho_v)`` slice of the solver's property table.
+
+    This is the identical :func:`thermo_utils.build_property_table` call
+    :func:`liqlev.runner.single.build_property_table_for_config` makes, so
+    interpolating it reproduces ``core.py:129-130`` instead of inventing a
+    saturation curve. Memoized because the build costs seconds of CoolProp
+    calls and is a pure function of its three arguments; the returned arrays
+    are read-only so no caller can poison the cache.
+    """
+
+    temps, _rhol, rhov, *_ = build_property_table(
+        fluid, final_pressure_psia, initial_pressure_psia
+    )
+    temps = np.array(temps, dtype=float)
+    rhov = np.array(rhov, dtype=float)
+    temps.setflags(write=False)
+    rhov.setflags(write=False)
+    return temps, rhov
+
+
+def film_drift_metric(
+    dataframe: pd.DataFrame, inputs: Mapping[str, Any] | None = None
+) -> FilmDriftMetric:
+    """Wall-film mass drift at ``t_end`` (the single measurement implementation).
+
+    REPORTED, NEVER GATED. This mirrors ``ullage_closure_metric`` in discipline
+    but is deliberately wired to no acceptance predicate: it is the assumption-6
+    instruction of ``docs/lox-vent-test-definition.md`` §5 item 6 ("Its
+    magnitude must be reported per run, not assumed small") applied to the wall
+    film rather than to the ullage.
+
+    The solver carries the film across steps as a VOLUME (``core.py:567``
+    ``vbl1 = vbl2``) while saturated vapour density falls through the blowdown.
+    So the cumulative mass the ullage was debited to fill the film,
+    ``sum(d vbl * rho_v(t1))`` (the film volume balance ``core.py:306-311``
+    evaluated at each step's own density), is NOT the mass the film holds under
+    the equation of state, ``vbl(t) * rho_v(t)``. The difference is the drift.
+
+    Reconstruction reference: the closed mass-ledger audit
+    ``run_vapor_balance.py`` (run of record
+    ``results_vapor_balance/2026-07-29_204715/report.txt``), which balances the
+    full ledger to 6e-13 lbm. ``inputs`` is the solver input mapping carried by
+    :class:`liqlev.runner.single.SingleCaseResult`; ``Tinit`` supplies the
+    start-of-step temperature of step 0 and ``Liquid``/``Pinit``/``Pfinal``
+    select the same property table the run interpolated. Without it (or for the
+    hydrogen polynomial path, which has no table) every field is NaN.
+
+    Does not mutate ``dataframe``.
+    """
+
+    if inputs is None or dataframe.empty:
+        return _UNAVAILABLE_FILM_DRIFT
+    if "Temp" not in dataframe.columns or "VBL vol" not in dataframe.columns:
+        return _UNAVAILABLE_FILM_DRIFT
+    fluid = str(inputs.get("Liquid", ""))
+    if fluid == "Hydrogen":
+        # core.py uses the _hydrogen_props polynomial fit, not a property table.
+        return _UNAVAILABLE_FILM_DRIFT
+    if not {"Tinit", "Pinit", "Pfinal"} <= set(inputs):
+        return _UNAVAILABLE_FILM_DRIFT
+
+    tinit = float(inputs["Tinit"])
+    temp = dataframe["Temp"].to_numpy(dtype=float)
+    vbl = dataframe["VBL vol"].to_numpy(dtype=float)
+    if not (
+        np.isfinite(tinit)
+        and np.isfinite(temp).all()
+        and np.isfinite(vbl).all()
+    ):
+        return _UNAVAILABLE_FILM_DRIFT
+
+    pt_temps, pt_rhov = _saturated_vapor_density_table(
+        fluid, float(inputs["Pfinal"]), float(inputs["Pinit"])
+    )
+    # Row k is the END of step k, so the start of step k is row k-1 — and for
+    # step 0 it is the initial condition (core.py:110 vbl1 = 0.0, :113 t1).
+    temp1 = np.concatenate([[tinit], temp[:-1]])
+    vbl1 = np.concatenate([[0.0], vbl[:-1]])
+    rhov1 = np.interp(temp1, pt_temps, pt_rhov)
+    rhov2 = np.interp(temp, pt_temps, pt_rhov)
+
+    retention = float(np.sum((vbl - vbl1) * rhov1))
+    inventory = float(vbl[-1] * rhov2[-1])
+    drift = retention - inventory
+    over_inventory = drift / inventory if inventory != 0.0 else float("nan")
+    if not (
+        np.isfinite(retention) and np.isfinite(inventory) and np.isfinite(drift)
+    ):
+        return _UNAVAILABLE_FILM_DRIFT
+    return FilmDriftMetric(
+        film_retention_lbm=retention,
+        film_eos_inventory_lbm=inventory,
+        film_drift_lbm=drift,
+        film_drift_over_inventory=float(over_inventory),
+    )
 
 
 def ullage_mass_is_acceptable(dataframe: pd.DataFrame) -> bool:
@@ -281,6 +419,10 @@ def summarize_lox_vent_result(
             ullage_closure_within_tolerance=False,
             physical=physical,
             failure_classifications=classifications,
+            film_retention_lbm=float("nan"),
+            film_eos_inventory_lbm=float("nan"),
+            film_drift_lbm=float("nan"),
+            film_drift_over_inventory=float("nan"),
         )
 
     height = dataframe["Height"].to_numpy(dtype=float)
@@ -294,6 +436,8 @@ def summarize_lox_vent_result(
     )
     values = dataframe.to_numpy(dtype=float)
     closure = ullage_closure_metric(dataframe)
+    # Reported alongside closure and fed to NO acceptance predicate below.
+    film = film_drift_metric(dataframe, result.inputs)
     physical, classifications = assess_lox_dataframe_physicality(dataframe)
     # Threshold verdict shares the same metric; do not re-derive residual.
     within = bool(
@@ -318,6 +462,10 @@ def summarize_lox_vent_result(
         ullage_closure_within_tolerance=within,
         physical=physical,
         failure_classifications=classifications,
+        film_retention_lbm=film.film_retention_lbm,
+        film_eos_inventory_lbm=film.film_eos_inventory_lbm,
+        film_drift_lbm=film.film_drift_lbm,
+        film_drift_over_inventory=film.film_drift_over_inventory,
     )
 
 
@@ -386,6 +534,13 @@ def _summary_manifest(summary: LoxVentSummary) -> dict[str, float | int | bool |
         "finite": summary.finite,
         "physical": summary.physical,
         "failure_classifications": list(summary.failure_classifications),
+        # Reported wall-film mass drift — no gate, no tolerance key.
+        "film_retention_lbm": _finite_or_none(summary.film_retention_lbm),
+        "film_eos_inventory_lbm": _finite_or_none(summary.film_eos_inventory_lbm),
+        "film_drift_lbm": _finite_or_none(summary.film_drift_lbm),
+        "film_drift_over_inventory": _finite_or_none(
+            summary.film_drift_over_inventory
+        ),
     }
 
 

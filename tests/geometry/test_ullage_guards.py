@@ -29,6 +29,7 @@ never special-cased; the 5% band is never relaxed.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from types import SimpleNamespace
 
 import pandas as pd
@@ -56,6 +57,29 @@ from validation.lox_vent_cases import (
 # Committed G0 anchor at 7d6a744 (rate-scaled BL gate matrix): 5.2468...%.
 G0_COMMITTED_CLOSURE = 0.05246846816058793
 
+# Reported (NOT gated) wall-film mass-drift anchors for the same G0 run, from
+# the closed mass-ledger audit run of record
+# LIQLEV_vent_study_spyder/results_vapor_balance/2026-07-29_204715/report.txt
+# ("A SECOND UNRECONCILED RESERVOIR — the wall film (surfaced, NOT gated)"):
+#   row   retention    EOS inv      drift  drift/inv %
+#   G0      0.99838    0.94055    0.05783         6.15
+G0_AUDIT_FILM_RETENTION_LBM = 0.99838
+G0_AUDIT_FILM_EOS_INVENTORY_LBM = 0.94055
+G0_AUDIT_FILM_DRIFT_LBM = 0.05783
+G0_AUDIT_FILM_DRIFT_OVER_INVENTORY = 0.0615
+
+
+@lru_cache(maxsize=1)
+def _g0_production_run():
+    """The ONE full-schedule G0 production run shared by the G0 guards.
+
+    Both the ullage-closure fire test and the film-drift report test assert
+    against the same committed G0 matrix row (dt = 0.02, duration 60 s); running
+    it once keeps the suite from paying for a second 60 s solve.
+    """
+
+    return run_lox_vent_case(G0, timestep_s=TIMESTEP_S, duration_s=60.0)
+
 
 def test_ullage_guard_fires_on_real_g0_via_lox_entry_point() -> None:
     """REAL bad case: G0 full schedule through the live LOX validation entry.
@@ -77,9 +101,7 @@ def test_ullage_guard_fires_on_real_g0_via_lox_entry_point() -> None:
 
     assert ULLAGE_CLOSURE_RELATIVE_TOLERANCE == 0.05  # never relaxed
 
-    dataframe, summary = run_lox_vent_case(
-        G0, timestep_s=TIMESTEP_S, duration_s=60.0
-    )
+    dataframe, summary = _g0_production_run()
 
     # Evidence the case is still the known-bad G0 (band check, not a pin).
     assert summary.ullage_closure_max_relative > ULLAGE_CLOSURE_RELATIVE_TOLERANCE
@@ -98,6 +120,55 @@ def test_ullage_guard_fires_on_real_g0_via_lox_entry_point() -> None:
     assert summary.failure_classifications == (
         ULLAGE_MASS_CLOSURE_CLASSIFICATION,
     )
+
+
+def test_g0_film_drift_is_reported_not_gated_and_matches_the_audit() -> None:
+    """Production anchor for the REPORTED wall-film mass-drift metric at G0.
+
+    Reference values are the audit run of record cited beside the constants
+    above (closed mass ledger to 6e-13 lbm), reconstructed here through the
+    production summary path — same shared G0 run as the closure guard.
+
+    The point of this test is twofold:
+    1. the magnitude is surfaced per run (assumption 6 / F4: "must be reported
+       per run, not assumed small"), and
+    2. surfacing it changes NO acceptance verdict — G0's only classification is
+       still ``ullage_mass_closure``, exactly as before the metric existed.
+    """
+
+    _dataframe, summary = _g0_production_run()
+
+    assert summary.film_retention_lbm == pytest.approx(
+        G0_AUDIT_FILM_RETENTION_LBM, rel=0.05
+    )
+    assert summary.film_eos_inventory_lbm == pytest.approx(
+        G0_AUDIT_FILM_EOS_INVENTORY_LBM, rel=0.05
+    )
+    assert summary.film_drift_lbm == pytest.approx(
+        G0_AUDIT_FILM_DRIFT_LBM, rel=0.05
+    )
+    assert summary.film_drift_lbm == pytest.approx(
+        summary.film_retention_lbm - summary.film_eos_inventory_lbm
+    )
+    assert summary.film_drift_over_inventory == pytest.approx(
+        summary.film_drift_lbm / summary.film_eos_inventory_lbm
+    )
+    assert summary.film_drift_over_inventory == pytest.approx(
+        G0_AUDIT_FILM_DRIFT_OVER_INVENTORY, rel=0.05
+    )
+    # The audit's headline comparison — drift = 3.8x the ullage gap D at G0 — is
+    # mass against mass, and D is not a summary field (only its normalized form
+    # ullage_closure_max_relative is), so it is recorded in docs/vent-study.md
+    # rather than asserted here against a dimensionless ratio.
+    #
+    # What IS asserted: surfacing the drift changed no verdict. G0 still fails on
+    # ullage closure alone, and the 5% band is untouched.
+    assert summary.failure_classifications == (
+        ULLAGE_MASS_CLOSURE_CLASSIFICATION,
+    )
+    assert not summary.ullage_closure_within_tolerance
+    assert not summary.physical
+    assert ULLAGE_CLOSURE_RELATIVE_TOLERANCE == 0.05  # never relaxed
 
 
 def test_ullage_guard_passes_on_g3_via_lox_entry_point() -> None:

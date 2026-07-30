@@ -6,7 +6,8 @@ machinery that already carries the campaign's acceptance evidence:
 * case structure — :func:`validation.lox_vent_cases.build_lox_vent_config`
   (epsilon mode, ramp contract, dual termination, tank constants);
 * execution — :func:`liqlev.runner.single.run_single_case`;
-* summary, ullage-closure metric and physicality assessment —
+* summary, ullage-closure metric, the reported (never gated) wall-film
+  mass-drift metric and physicality assessment —
   :func:`validation.lox_vent_cases.summarize_lox_vent_result`;
 * provenance discipline — the F8 hash-bound manifest fields, ``git describe``
   stamp and dirty-tree refusal used by
@@ -103,6 +104,22 @@ the OFF interval, within each 3.4 s cycle. That is representative of the
 acceleration history, but it is not more physical than the G1-G3 bracket.
 GP is not a validated prediction and must not be quoted as one.
 """
+
+# Reported (never gated) wall-film mass-drift block, printed by ``format_report``
+# beside the ullage-closure gate line. ASCII only, same discipline as the caveat
+# above. The metric itself lives in ``validation.lox_vent_cases``.
+FILM_DRIFT_HEADER = (
+    "Wall-film mass drift (lbm) - REPORTED, NOT GATED "
+    "(assumption 6 / finding F4)"
+)
+FILM_DRIFT_PROVENANCE = (
+    "  The film is carried across steps as a VOLUME (core.py:567 vbl1 = vbl2)\n"
+    "  while saturated vapour density falls, so the mass the ullage was debited\n"
+    "  to fill it (retention) exceeds the mass it holds under the equation of\n"
+    "  state (vbl * rho_v). Reconstruction and magnitudes of record: the closed\n"
+    "  mass-ledger audit run 2026-07-29_204715 (run_vapor_balance.py)."
+)
+FILM_DRIFT_NOT_GATED = "Film drift: reported only, no acceptance gate."
 
 # Square edges are emitted as double breakpoints separated by this riser — the
 # same 1e-9 s convention the GUI uses when it extends a CSV gravity profile.
@@ -1227,6 +1244,38 @@ def _closure_verdict(summary: lox.LoxVentSummary) -> str:
     return "under" if summary.ullage_closure_within_tolerance else "EXCEEDS"
 
 
+def _film_drift_block(rows: Sequence[VentStudyRow]) -> list[str]:
+    """Per-row wall-film mass drift — surfaced, never gated.
+
+    Values come straight from :func:`validation.lox_vent_cases.film_drift_metric`
+    via the summary; nothing is recomputed here and no verdict column exists,
+    because the metric feeds no acceptance predicate.
+    """
+
+    def mass(value: float) -> str:
+        return f"{value:>10.5f}" if np.isfinite(value) else f"{'n/a':>10}"
+
+    lines = [
+        FILM_DRIFT_HEADER,
+        FILM_DRIFT_PROVENANCE,
+        f"{'Row':<6} {'retention':>10} {'EOS inv':>10} {'drift':>10} "
+        f"{'drift/inv %':>12}",
+    ]
+    for row in rows:
+        summary = row.summary
+        ratio = summary.film_drift_over_inventory
+        percent = (
+            f"{ratio * 100.0:>11.2f}%" if np.isfinite(ratio) else f"{'n/a':>12}"
+        )
+        lines.append(
+            f"{row.name:<6} {mass(summary.film_retention_lbm)} "
+            f"{mass(summary.film_eos_inventory_lbm)} "
+            f"{mass(summary.film_drift_lbm)} {percent}"
+        )
+    lines.append(FILM_DRIFT_NOT_GATED)
+    return lines
+
+
 def format_report(result: VentStudyResult) -> str:
     """Render the results table, the dt-plateau block and §5 assumptions."""
 
@@ -1323,6 +1372,8 @@ def format_report(result: VentStudyResult) -> str:
         f"{lox.ULLAGE_CLOSURE_RELATIVE_TOLERANCE * 100.0:g}% "
         "(reported, never relaxed)."
     )
+    lines.append("")
+    lines += _film_drift_block(result.rows)
     if pulsed_rows:
         lines.append("")
         lines.append(PULSED_ROW_CAVEAT.rstrip("\n"))

@@ -88,6 +88,10 @@ def synthetic_result(config: vent_study.VentStudyConfig | None = None):
         ullage_closure_within_tolerance=True,
         physical=True,
         failure_classifications=(),
+        film_retention_lbm=0.0125,
+        film_eos_inventory_lbm=0.0120,
+        film_drift_lbm=0.0005,
+        film_drift_over_inventory=0.0005 / 0.0120,
     )
     row = vent_study.VentStudyRow(
         name="G3",
@@ -407,6 +411,53 @@ def test_report_table_carries_the_reported_columns() -> None:
     assert "ullage" in report
     assert "Ullage-closure acceptance gate: 5%" in report
     assert "dt-plateau check: disabled for this run." in report
+
+
+def test_report_surfaces_the_film_drift_block_as_reported_not_gated() -> None:
+    """The wall-film drift block is printed per row and names itself ungated."""
+
+    result = synthetic_result()
+    summary = result.rows[0].summary
+    report = format_report(result)
+
+    assert vent_study.FILM_DRIFT_HEADER in report
+    assert vent_study.FILM_DRIFT_NOT_GATED in report
+    # Provenance of the finding is in the block, not only in the docs.
+    assert "core.py:567" in report
+    # Per-row values: retention / EOS inventory / drift (lbm) + drift/inv %.
+    assert f"{summary.film_retention_lbm:>10.5f}" in report
+    assert f"{summary.film_eos_inventory_lbm:>10.5f}" in report
+    assert f"{summary.film_drift_lbm:>10.5f}" in report
+    assert f"{summary.film_drift_over_inventory * 100.0:>11.2f}%" in report
+    # The block sits after the closure gate line and before the dt-plateau block.
+    assert report.index("Ullage-closure acceptance gate") < report.index(
+        vent_study.FILM_DRIFT_HEADER
+    )
+    assert report.index(vent_study.FILM_DRIFT_HEADER) < report.index(
+        "dt-plateau check"
+    )
+    # Reported only: the block introduces no verdict column of its own.
+    assert "EXCEEDS" not in report.split(vent_study.FILM_DRIFT_HEADER)[1].split(
+        "dt-plateau check"
+    )[0]
+
+
+def test_docs_record_the_reported_film_drift_metric() -> None:
+    """docs/vent-study.md documents the metric, its provenance and its status."""
+
+    vent_doc = (vent_study.ROOT / "docs" / "vent-study.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "film_drift_lbm" in vent_doc
+    assert "film_retention_lbm" in vent_doc
+    assert "film_eos_inventory_lbm" in vent_doc
+    assert "film_drift_over_inventory" in vent_doc
+    # Provenance: the heritage line and the audit run of record.
+    assert "core.py:567" in vent_doc
+    assert "2026-07-29_204715" in vent_doc
+    # Status: reported, never gated.
+    assert "not gated" in vent_doc.lower()
 
 
 # --------------------------------------------------------------------------
