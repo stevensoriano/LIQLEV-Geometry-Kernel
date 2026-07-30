@@ -234,6 +234,12 @@ Failure codes take precedence over saturation. **Default-off** is a contract:
 `check_physics_baseline.py` and the 29-column baseline remain green without
 any consumer opt-in.
 
+That same F10 test pins the **column-name** contract — all 29 names,
+byte-identically. The authoritative **semantics** of every column, including the
+three misleadingly-named ones (`Vapor in BL`, `Vap Gen Rate (kg/s)`,
+`Total Vap Gen (kg)`), live in
+[`docs/solver-columns.md`](docs/solver-columns.md).
+
 ## Project Structure
 
 ```text

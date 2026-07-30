@@ -141,14 +141,65 @@ changes the matrix above.
 
 Every report prints the per-row table (rise in mm, `dh/h0`, max AK3, ullage
 closure with its `under`/`EXCEEDS` verdict against the 5% gate, convergence
-failures, physicality), the dt-plateau block, and then **§5 of
-`docs/lox-vent-test-definition.md` quoted verbatim** — read from the committed
-document at run time, never restated in code, so the report cannot drift from
-the definition of record.
+failures, physicality), the reported-only wall-film mass-drift block below, the
+dt-plateau block, and then **§5 of `docs/lox-vent-test-definition.md` quoted
+verbatim** — read from the committed document at run time, never restated in
+code, so the report cannot drift from the definition of record.
 
 The dt-plateau check re-runs the nominal-maximum row at `dt/2` and `dt/4` and
 reports `100 × (rise(dt_i) − rise(dt)) / rise(dt)` plus the maximum absolute
 deviation.
+
+### Wall-film mass drift — reported, not gated
+
+Directly beneath the ullage-closure gate line every report prints a per-row
+**wall-film mass-drift** block. It is a *measurement*, not a criterion: it feeds
+no acceptance predicate, no tolerance constant and no `physical` verdict. It
+exists because §5 item 6 of `docs/lox-vent-test-definition.md` (finding F4,
+"Heritage ullage formulation") instructs that the magnitude of the unreconciled
+vapour bookkeeping **must be reported per run, not assumed small** — and the
+same instruction applies to the wall film as to the ullage.
+
+**Definition.** The solver carries the wall film across steps as a *volume*
+(`core.py:567`, `vbl1 = vbl2`) while saturated vapour density falls through the
+blowdown. So the cumulative mass the ullage was debited to fill the film is not
+the mass the film holds under the equation of state:
+
+| field | meaning |
+| --- | --- |
+| `film_retention_lbm` | `Σ (Δ vbl) · ρ_v(t₁)` — mass debited from the ullage to fill the film, summed over steps at each step's own start-of-step density (the film volume balance, `core.py:306-311`) |
+| `film_eos_inventory_lbm` | `vbl(t_end) · ρ_v(t_end)` — what the film holds under the equation of state at the final state |
+| `film_drift_lbm` | `film_retention_lbm − film_eos_inventory_lbm` — vapour mass that leaves the ledger with no destination |
+| `film_drift_over_inventory` | the drift as a fraction of the inventory (printed as `drift/inv %`) |
+
+`ρ_v(T)` is interpolated from the identical 400-point saturation table the run
+itself interpolated (`core.py:129-130`), rebuilt from the run's own
+`Liquid`/`Pinit`/`Pfinal` inputs, and `Tinit` supplies the start-of-step
+temperature of step 0. Heritage behaviour is untouched: this is instrumentation
+only, and all four fields are `NaN` (→ `null` in the manifest) when the run
+state needed to reconstruct them is unavailable.
+
+**Provenance.** The reconstruction mirrors the closed mass-ledger audit
+`run_vapor_balance.py` in the companion Spyder study project (outside this
+repository), whose run of record
+`LIQLEV_vent_study_spyder/results_vapor_balance/2026-07-29_204715/report.txt`
+balances the full ledger to 6e-13 lbm and tabulates the production magnitudes,
+in lbm, under the heading "A SECOND UNRECONCILED RESERVOIR — the wall film
+(surfaced, NOT gated)":
+
+```
+row   retention    EOS inv      drift  drift/inv %
+G0      0.99838    0.94055    0.05783         6.15
+G1      0.63948    0.59652    0.04296         7.20
+G2      0.54134    0.50283    0.03851         7.66
+G3      0.20843    0.18886    0.01957        10.36
+G4      0.15907    0.14339    0.01568        10.94
+```
+
+At G0 the drift is ~3.8× the ullage gap that the 5% closure criterion
+normalizes — which is exactly why it is surfaced rather than assumed small. It
+still gates nothing: G0's only failure classification remains
+`ullage_mass_closure`, unchanged by this metric's existence.
 
 ---
 
@@ -165,7 +216,9 @@ manifest and refuses to be written from a dirty worktree:
 - the resolved case definition (including the derived gravity matrix and the
   spaceflight block when used);
 - per-row summaries serialized by the same function as the production manifest,
-  plus `rise_mm`, and the dt-plateau block.
+  plus `rise_mm`, and the dt-plateau block. The four reported film-drift fields
+  ride along with every summary; being ungated, they carry no companion
+  tolerance key (contrast `ullage_closure_relative_tolerance`).
 
 ---
 

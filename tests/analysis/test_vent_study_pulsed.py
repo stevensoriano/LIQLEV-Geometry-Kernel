@@ -101,6 +101,10 @@ def synthetic_summary(gravity_g: float) -> lox.LoxVentSummary:
         ullage_closure_within_tolerance=True,
         physical=True,
         failure_classifications=(),
+        film_retention_lbm=0.0125,
+        film_eos_inventory_lbm=0.0120,
+        film_drift_lbm=0.0005,
+        film_drift_over_inventory=0.0005 / 0.0120,
     )
 
 
